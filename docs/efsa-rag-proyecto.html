@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>efsa-additives-rag — documentación del proyecto</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg-editor:#1e1e1e;
+    --bg-sidebar:#252526;
+    --bg-tabbar:#2d2d2d;
+    --bg-tab-active:#1e1e1e;
+    --bg-card:#252526;
+    --bg-inline:#2a2a2a;
+    --border:#3c3c3c;
+    --text:#d4d4d4;
+    --text-dim:#858585;
+    --text-bright:#ffffff;
+    --blue:#569cd6;
+    --lightblue:#9cdcfe;
+    --teal:#4ec9b0;
+    --yellow:#dcdcaa;
+    --orange:#ce9178;
+    --green:#6a9955;
+    --red:#f14c4c;
+    --amber:#e5c07b;
+    --purple:#c586c0;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg-editor);
+    color:var(--text);
+    font-family:'JetBrains Mono', monospace;
+    font-size:14px;
+    line-height:1.7;
+  }
+  .titlebar{
+    background:var(--bg-tabbar);
+    border-bottom:1px solid var(--border);
+    padding:10px 20px;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    font-size:13px;
+    color:var(--text-dim);
+  }
+  .dots{display:flex;gap:6px;}
+  .dot{width:11px;height:11px;border-radius:50%;}
+  .dot.r{background:#ff5f56;}
+  .dot.y{background:#ffbd2e;}
+  .dot.g{background:#27c93f;}
+  .titlebar .path{margin-left:8px;}
+  .sidebar-layout{
+    display:flex;
+    min-height:100vh;
+  }
+  .sidebar{
+    width:230px;
+    background:var(--bg-sidebar);
+    border-right:1px solid var(--border);
+    padding:16px 0;
+    flex-shrink:0;
+  }
+  .sidebar-header{
+    color:var(--text-dim);
+    font-size:11px;
+    letter-spacing:1px;
+    text-transform:uppercase;
+    padding:0 16px 10px;
+  }
+  .file-item{
+    padding:6px 16px 6px 20px;
+    cursor:pointer;
+    color:var(--text-dim);
+    font-size:13px;
+    border-left:2px solid transparent;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .file-item:hover{background:rgba(255,255,255,0.04); color:var(--text);}
+  .file-item.active{
+    background:rgba(255,255,255,0.06);
+    color:var(--text-bright);
+    border-left:2px solid var(--blue);
+  }
+  .file-item .icon{margin-right:6px;}
+  .main{
+    flex:1;
+    min-width:0;
+    display:flex;
+    flex-direction:column;
+  }
+  .tabbar{
+    display:flex;
+    background:var(--bg-tabbar);
+    border-bottom:1px solid var(--border);
+    overflow-x:auto;
+  }
+  .tab{
+    padding:10px 18px;
+    font-size:13px;
+    color:var(--text-dim);
+    background:var(--bg-tabbar);
+    border-right:1px solid var(--border);
+    cursor:pointer;
+    white-space:nowrap;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .tab.active{
+    background:var(--bg-tab-active);
+    color:var(--text-bright);
+    border-top:2px solid var(--blue);
+    padding-top:8px;
+  }
+  .tab .dotmark{width:6px;height:6px;border-radius:50%;background:var(--text-dim);}
+  .tab.active .dotmark{background:var(--blue);}
+  .content{
+    padding:36px 48px;
+    max-width:900px;
+  }
+  .panel{display:none;}
+  .panel.active{display:block; animation:fadein .15s ease;}
+  @keyframes fadein{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+
+  h1{
+    color:var(--text-bright);
+    font-size:24px;
+    font-weight:700;
+    margin:0 0 6px;
+  }
+  .subtitle{color:var(--text-dim); font-size:14px; margin-bottom:32px;}
+  h2{
+    color:var(--lightblue);
+    font-size:16px;
+    font-weight:700;
+    margin:36px 0 14px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  h2::before{content:"##"; color:var(--text-dim); font-weight:400;}
+  h3{
+    color:var(--teal);
+    font-size:14px;
+    font-weight:700;
+    margin:24px 0 10px;
+  }
+  h3::before{content:"### "; color:var(--text-dim); font-weight:400;}
+  p{margin:0 0 14px; color:var(--text);}
+  strong{color:var(--text-bright); font-weight:700;}
+  .comment{color:var(--green);}
+  ul,ol{margin:0 0 16px; padding-left:22px;}
+  li{margin-bottom:8px;}
+  li::marker{color:var(--blue);}
+
+  code, .inline-code{
+    background:var(--bg-inline);
+    color:var(--orange);
+    padding:1px 6px;
+    border-radius:3px;
+    font-size:13px;
+  }
+  .codeblock{
+    background:var(--bg-inline);
+    border:1px solid var(--border);
+    border-radius:6px;
+    padding:16px 18px;
+    margin:14px 0 20px;
+    font-size:13px;
+    overflow-x:auto;
+    white-space:pre;
+    color:var(--text);
+  }
+  .codeblock .k{color:var(--purple);}
+  .codeblock .s{color:var(--orange);}
+  .codeblock .c{color:var(--green);}
+  .codeblock .f{color:var(--yellow);}
+  .codeblock .n{color:var(--lightblue);}
+
+  .callout{
+    border-left:3px solid var(--blue);
+    background:rgba(86,156,214,0.08);
+    padding:12px 16px;
+    margin:16px 0;
+    border-radius:0 6px 6px 0;
+    font-size:13px;
+  }
+  .callout .tag{
+    font-weight:700;
+    font-size:11px;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    display:block;
+    margin-bottom:6px;
+  }
+  .callout.info{border-color:var(--blue); background:rgba(86,156,214,0.08);}
+  .callout.info .tag{color:var(--blue);}
+  .callout.ok{border-color:var(--green); background:rgba(106,153,85,0.1);}
+  .callout.ok .tag{color:#8fce6a;}
+  .callout.warn{border-color:var(--amber); background:rgba(229,192,123,0.09);}
+  .callout.warn .tag{color:var(--amber);}
+  .callout.risk{border-color:var(--red); background:rgba(241,76,76,0.09);}
+  .callout.risk .tag{color:var(--red);}
+  .callout p{margin:0;}
+
+  .badge-row{display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 20px;}
+  .badge{
+    background:var(--bg-inline);
+    border:1px solid var(--border);
+    color:var(--lightblue);
+    font-size:12px;
+    padding:4px 10px;
+    border-radius:4px;
+  }
+
+  table{width:100%; border-collapse:collapse; margin:16px 0 22px; font-size:13px;}
+  th{
+    text-align:left;
+    color:var(--text-dim);
+    font-weight:400;
+    text-transform:uppercase;
+    font-size:11px;
+    letter-spacing:0.5px;
+    padding:8px 12px;
+    border-bottom:1px solid var(--border);
+  }
+  td{
+    padding:10px 12px;
+    border-bottom:1px solid var(--border);
+    color:var(--text);
+    vertical-align:top;
+  }
+  td.mono{color:var(--lightblue);}
+  tr:hover td{background:rgba(255,255,255,0.02);}
+
+  .step{
+    display:flex;
+    gap:16px;
+    margin-bottom:18px;
+    padding-bottom:18px;
+    border-bottom:1px solid var(--border);
+  }
+  .step:last-child{border-bottom:none;}
+  .step-num{
+    flex-shrink:0;
+    width:28px;
+    height:28px;
+    border-radius:6px;
+    background:var(--bg-inline);
+    border:1px solid var(--border);
+    color:var(--lightblue);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:13px;
+    font-weight:700;
+  }
+  .step-body strong{display:block; color:var(--text-bright); margin-bottom:4px; font-size:14px;}
+  .step-body p{margin:0; color:var(--text-dim); font-size:13px;}
+  .step-body .status{
+    display:inline-block;
+    font-size:11px;
+    padding:2px 8px;
+    border-radius:10px;
+    margin-left:8px;
+    text-transform:uppercase;
+    letter-spacing:0.5px;
+  }
+  .status.done{background:rgba(106,153,85,0.2); color:#8fce6a;}
+  .status.pending{background:rgba(229,192,123,0.2); color:var(--amber);}
+
+  .flow{
+    display:flex;
+    flex-direction:column;
+    gap:0;
+    margin:20px 0 24px;
+  }
+  .flow-box{
+    background:var(--bg-inline);
+    border:1px solid var(--border);
+    border-left:3px solid var(--blue);
+    border-radius:6px;
+    padding:12px 16px;
+  }
+  .flow-box .n{color:var(--lightblue); font-weight:700; font-size:13px;}
+  .flow-box .d{color:var(--text-dim); font-size:12px; margin-top:2px;}
+  .flow-arrow{
+    text-align:center;
+    color:var(--text-dim);
+    font-size:14px;
+    padding:4px 0;
+  }
+
+  .footer-note{
+    margin-top:48px;
+    padding-top:20px;
+    border-top:1px solid var(--border);
+    color:var(--text-dim);
+    font-size:12px;
+  }
+  ::selection{background:rgba(86,156,214,0.3);}
+  @media (max-width:800px){
+    .sidebar{display:none;}
+    .content{padding:24px;}
+  }
+</style>
+</head>
+<body>
+
+<div class="titlebar">
+  <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+  <span class="path">efsa-additives-rag — documentación</span>
+</div>
+
+<div class="sidebar-layout">
+  <div class="sidebar">
+    <div class="sidebar-header">explorer</div>
+    <div class="file-item" data-panel="readme"><span class="icon">📄</span>README.md</div>
+    <div class="file-item" data-panel="architecture"><span class="icon">📄</span>ARCHITECTURE.md</div>
+    <div class="file-item" data-panel="stack"><span class="icon">📄</span>STACK.json</div>
+    <div class="file-item" data-panel="roadmap"><span class="icon">📄</span>ROADMAP.md</div>
+    <div class="file-item" data-panel="limitations"><span class="icon">📄</span>LIMITATIONS.md</div>
+  </div>
+
+  <div class="main">
+    <div class="tabbar">
+      <div class="tab active" data-panel="readme"><span class="dotmark"></span>README.md</div>
+      <div class="tab" data-panel="architecture"><span class="dotmark"></span>ARCHITECTURE.md</div>
+      <div class="tab" data-panel="stack"><span class="dotmark"></span>STACK.json</div>
+      <div class="tab" data-panel="roadmap"><span class="dotmark"></span>ROADMAP.md</div>
+      <div class="tab" data-panel="limitations"><span class="dotmark"></span>LIMITATIONS.md</div>
+    </div>
+
+    <div class="content">
+
+      <!-- README -->
+      <div class="panel active" id="readme">
+        <h1>efsa-additives-rag</h1>
+        <div class="subtitle">Asistente RAG sobre dictámenes regulatorios de reevaluación de aditivos alimentarios (EFSA, Reglamento UE 257/2010)</div>
+
+        <div class="badge-row">
+          <span class="badge">LangGraph</span>
+          <span class="badge">RAG</span>
+          <span class="badge">MCP</span>
+          <span class="badge">Ciencia de alimentos</span>
+          <span class="badge">Portfolio</span>
+        </div>
+
+        <h2>objetivo</h2>
+        <p>Demostrar diferenciación técnica real combinando ingeniería de IA (LangGraph, RAG, MCP) con dominio profundo en química / ciencia de alimentos (6 años de investigación, patente en extracción de bioactivos, 30+ publicaciones). No es un ejercicio de "aprender un framework" — es un sistema que solo alguien que sabe leer un dictamen EFSA de verdad puede diseñar bien, en particular la lógica de verificación de vigencia (nodo 3).</p>
+
+        <div class="callout info">
+          <span class="tag">por qué este proyecto y no otro</span>
+          <p>Un proyecto anterior (<code>skillgap-agent</code>) se descartó como pieza insignia por ser una idea de portfolio genérica y saturada. Este proyecto existe específicamente para no repetir ese error: la razón de ser es la diferenciación de dominio, no la ejecución técnica en sí, que reutiliza patrones ya dominados.</p>
+        </div>
+
+        <h2>a quién va dirigido</h2>
+        <table>
+          <tr><th>audiencia</th><th>qué busca ver</th></tr>
+          <tr>
+            <td class="mono">reclutador / entrevistador técnico</td>
+            <td>Evidencia de criterio de ingeniería real: decisiones justificadas con datos, no solo "usé LangGraph". Que el candidato sepa cuándo NO usar un LLM (lookups estructurados) y cuándo sí (síntesis narrativa).</td>
+          </tr>
+          <tr>
+            <td class="mono">persona con interés en seguridad alimentaria</td>
+            <td>Explorar el historial de reevaluación de un aditivo con citas verificables al EFSA Journal exacto — sin que el sistema jamás actúe como asesoría regulatoria.</td>
+          </tr>
+        </table>
+
+        <div class="callout risk">
+          <span class="tag">límite de propósito — no negociable</span>
+          <p>Esta es una herramienta de <strong>exploración de literatura regulatoria</strong>, no de asesoramiento regulatorio. Debe quedar explícito en la UI y en el README. El sistema nunca debe afirmar si un aditivo "es seguro" — solo debe citar lo que dice el dictamen correspondiente.</p>
+        </div>
+      </div>
+
+      <!-- ARCHITECTURE -->
+      <div class="panel" id="architecture">
+        <h1>cómo funciona</h1>
+        <div class="subtitle">Dos fuentes de datos → orquestador LangGraph de 4 nodos → dos superficies de exposición</div>
+
+        <h2>capa de datos — dos fuentes, roles distintos</h2>
+        <div class="flow">
+          <div class="flow-box">
+            <div class="n">OpenFoodTox (xlsx, ~7.880 sustancias)</div>
+            <div class="d">Fuente de verdad para todo lo cuantificable: ADI/TDI/NOAEL, fechas de dictámenes, DOIs. Consulta determinista, cero riesgo de alucinación.</div>
+          </div>
+          <div class="flow-arrow">+</div>
+          <div class="flow-box">
+            <div class="n">PDFs de dictámenes de reevaluación (~118 documentos únicos)</div>
+            <div class="d">Fuente para lo cualitativo: discusión de incertidumbre, razonamiento del panel, por qué cambió un valor entre reevaluaciones.</div>
+          </div>
+        </div>
+
+        <h2>orquestador LangGraph — el diferenciador real</h2>
+        <div class="flow">
+          <div class="flow-box">
+            <div class="n">1. Extracción de entidad</div>
+            <div class="d">LLM identifica qué aditivo / E-number pregunta el usuario.</div>
+          </div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-box">
+            <div class="n">2. Retrieval híbrido</div>
+            <div class="d">Query estructurada contra OpenFoodTox (valores) + búsqueda vectorial contra Chroma (contexto narrativo).</div>
+          </div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-box">
+            <div class="n">3. Verificación de vigencia</div>
+            <div class="d">Cadena de joins determinista: <code>FLEX_SUM.ToxRefValues → DOSSIER_DOCS → DOSSIER</code>, ordenado por fecha, filtrado por tipo "EFSA opinion". LLM solo si el resultado es ambiguo.</div>
+          </div>
+          <div class="flow-arrow">↓</div>
+          <div class="flow-box">
+            <div class="n">4. Generación con cita obligatoria</div>
+            <div class="d">Redacta la respuesta citando el número exacto de EFSA Journal / DOI recuperado. Nunca "según un documento".</div>
+          </div>
+        </div>
+
+        <h2>exposición — dos superficies, mismo grafo</h2>
+        <table>
+          <tr><th>superficie</th><th>rol</th></tr>
+          <tr><td class="mono">servidor MCP</td><td><code>search_efsa_opinion(substance)</code>, <code>get_reevaluation_status(substance)</code> — wrapper del razonamiento, no de la base de datos (a diferencia de <code>mcp-openfoodtox</code>, ya existente y desactualizado desde 2023).</td></tr>
+          <tr><td class="mono">UI Streamlit / Gradio</td><td>Demo interactiva, sin lógica propia. Incluye botón de refresco de corpus con candado server-side de 24h.</td></tr>
+        </table>
+
+        <div class="callout ok">
+          <span class="tag">verificado con datos reales, no supuesto</span>
+          <p>La cadena de joins del nodo 3 se probó con aspartamo (E 951): 5 registros de ADI enlazan a dictámenes de 2006, 2009 (×2), 2011 y 2013 — <code>MAX(fecha)</code> filtrado por tipo devuelve correctamente la reevaluación de 2013.</p>
+        </div>
+
+        <h2>nodo 4 — especificación de comunicación de riesgo</h2>
+        <p>El ADI/NOAEL ya documenta consecuencias para la salud (efecto crítico, órgano afectado, estudio pivotal) vía <code>CriticalEndpoint</code>, <code>TargetSystemOrganToxicity</code> y la sección <code>Discussion</code> de <code>END_SUM</code> — no hace falta ninguna fuente externa para esto. Lo que sí exige cuidado es cómo se redacta.</p>
+        <div class="codeblock"><span class="c">// system prompt — restricción obligatoria del nodo 4</span>
+<span class="f">SIEMPRE</span> aclarar: el ADI incluye un factor de incertidumbre
+(normalmente ×100 sobre el NOAEL) — el valor ya está muy por
+debajo de la dosis a la que se observó el efecto crítico.
+
+<span class="f">PROHIBIDO</span> redactar: <span class="s">"si se supera el ADI, se produce/puede
+producir [efecto]"</span> — el ADI es un límite de exposición segura
+con margen incorporado, <span class="k">no</span> un umbral de toxicidad.
+
+<span class="f">FÓRMULA CORRECTA</span>: <span class="s">"el ADI incorpora un margen de seguridad de
+[factor] veces por debajo de la dosis a la que se observó
+[efecto] en el estudio pivotal [especie/duración]"</span>.
+</div>
+        <div class="callout warn">
+          <span class="tag">por qué esto no es opcional</span>
+          <p>Confundir "límite de exposición con margen de seguridad" con "umbral de toxicidad" es un error científico, no solo de tono — y en un sistema de seguridad alimentaria, redactarlo mal equivale a generar alarmismo con datos reales. Esta restricción va en el system prompt, no se deja a criterio del LLM.</p>
+        </div>
+      </div>
+
+      <!-- STACK -->
+      <div class="panel" id="stack">
+        <h1>herramientas</h1>
+        <div class="subtitle">Qué hace cada pieza del stack y por qué se eligió</div>
+
+        <div class="codeblock"><span class="c">// ingesta y datos estructurados</span>
+<span class="k">pandas</span> / <span class="k">openpyxl</span>     <span class="c">— lectura y joins sobre OpenFoodTox (xlsx)</span>
+<span class="k">requests</span>              <span class="c">— descarga de PDFs desde EFSA / Zenodo</span>
+
+<span class="c">// RAG</span>
+<span class="k">LangChain</span>             <span class="c">— PyPDFLoader, RecursiveCharacterTextSplitter</span>
+<span class="k">sentence-transformers</span> <span class="c">— embeddings locales (coste cero)</span>
+<span class="k">Chroma</span>                <span class="c">— vector store, local</span>
+
+<span class="c">// orquestación</span>
+<span class="k">LangGraph</span>             <span class="c">— grafo de 4 nodos (ver ARCHITECTURE.md)</span>
+<span class="k">DeepSeek V4-Flash</span>     <span class="c">— LLM de razonamiento ($0.14/$0.28 por 1M tokens)</span>
+
+<span class="c">// exposición</span>
+<span class="k">MCP</span>                   <span class="c">— servidor de herramientas reutilizables</span>
+<span class="k">Streamlit</span>             <span class="c">— UI de demo</span>
+
+<span class="c">// hosting</span>
+<span class="k">HF Spaces</span> / <span class="k">Streamlit Community Cloud</span> <span class="c">— tier gratuito</span>
+</div>
+
+        <h3>por qué DeepSeek y no un modelo local para producción</h3>
+        <p>Con ~3.000 tokens de entrada y ~500 de salida por consulta, el coste ronda <code>$0.0006</code> por consulta. Un presupuesto de 6-7€/mes cubre 10.000-12.000 consultas — muy por encima de lo que un portfolio necesita. El caché automático de DeepSeek (prompt de sistema repetido) baja esto aún más.</p>
+
+        <h3>por qué embeddings locales y no vía API</h3>
+        <p>El botón de refresco reindexa contenido nuevo cada vez que se pulsa (dentro del límite de 24h). Si los embeddings fueran de pago, cada refresco tendría coste variable no acotado por el candado del botón. Con <code>sentence-transformers</code> local, el refresco solo consume cómputo del hosting, no dinero.</p>
+      </div>
+
+      <!-- ROADMAP -->
+      <div class="panel" id="roadmap">
+        <h1>paso a paso de construcción</h1>
+        <div class="subtitle">Orden de implementación, no de arquitectura</div>
+
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <strong>QA final del corpus <span class="status pending">pendiente</span></strong>
+            <p>Cruzar los 118 dictámenes filtrados (<code>Domain.FoodDomain == 'food additives'</code> + "re-evaluation" en título) contra las calls for data activas conocidas (ribonucleótidos E626-635, ácido glucónico E574-579, aditivos en forma gaseosa) para detectar huecos.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <strong>Descarga y organización de PDFs</strong>
+            <p>Script de descarga desde los DOIs recuperados en <code>DOSSIER</code>. Estructura de carpetas por E-number / año.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <strong>Script de ingesta OpenFoodTox</strong>
+            <p>Implementar en pandas la cadena de joins verificada: <code>FLEX_SUM.ToxRefValues → DOSSIER_DOCS → DOSSIER</code>. Tests contra el caso aspartamo como referencia.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <strong>Chunking + embeddings + Chroma</strong>
+            <p>Trocear los PDFs, generar embeddings locales, poblar el vector store. Definir estrategia de chunk size/overlap sobre el contenido real (no genérica).</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">5</div>
+          <div class="step-body">
+            <strong>Nodos del grafo LangGraph</strong>
+            <p>Implementar los 4 nodos con tests unitarios por nodo, en particular el heurístico + fallback del nodo 3.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">6</div>
+          <div class="step-body">
+            <strong>Servidor MCP</strong>
+            <p><code>search_efsa_opinion</code> y <code>get_reevaluation_status</code> como wrapper del grafo compilado.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">7</div>
+          <div class="step-body">
+            <strong>UI Streamlit</strong>
+            <p>Interfaz de consulta + botón de refresco con candado server-side de 24h (archivo de bloqueo, o almacenamiento externo si el hosting es efímero).</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">8</div>
+          <div class="step-body">
+            <strong>Deploy + README</strong>
+            <p>HF Spaces o Streamlit Community Cloud. README con las limitaciones documentadas explícitamente (ver LIMITATIONS.md), no ocultas.</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">9</div>
+          <div class="step-body">
+            <strong>Refresco incremental automatizado <span class="status pending">futuro, no MVP</span></strong>
+            <p>GitHub Action programada que compare versión de OpenFoodTox y solo procese lo nuevo. Fuera de scope del portfolio inicial — documentado como mejora futura, no como deuda oculta.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- LIMITATIONS -->
+      <div class="panel" id="limitations">
+        <h1>limitaciones conocidas</h1>
+        <div class="subtitle">Lo que hay que documentar en el README con honestidad, no maquillar</div>
+
+        <div class="callout warn">
+          <span class="tag">cobertura del corpus no verificada al 100%</span>
+          <p>Los 118 dictámenes se obtuvieron filtrando por dominio + patrón de texto en el título ("re-evaluation"), no por un campo estructural fiable. No existe una tabla pública única de EFSA para validar 1:1. Riesgo de falsos negativos si algún dictamen usa otra terminología en el título.</p>
+        </div>
+
+        <div class="callout warn">
+          <span class="tag">nodo 3 es heurístico, no infalible</span>
+          <p><code>MAX(fecha)</code> filtrado por <code>Type == 'EFSA opinion'</code> funciona en los casos probados, pero no hay garantía general si existen dos opiniones del mismo tipo muy próximas en el tiempo sin que el título aclare cuál sustituye a cuál.</p>
+        </div>
+
+        <div class="callout info">
+          <span class="tag">actualización no es en tiempo real, por diseño</span>
+          <p>OpenFoodTox se publica por versiones (no como feed en vivo), y el programa de reevaluación sigue activo en 2026. El botón de refresco es una comprobación bajo demanda con candado de 24h, no un sistema de vigilancia continua — decisión de diseño explícita, no limitación técnica no resuelta.</p>
+        </div>
+
+        <div class="callout risk">
+          <span class="tag">candado por archivo depende del hosting</span>
+          <p>Si el despliegue usa almacenamiento efímero (contenedores que se reinician), el archivo de bloqueo del botón puede perderse antes de las 24h. Si esto importa, mover el candado a almacenamiento externo persistente.</p>
+        </div>
+
+        <div class="callout ok">
+          <span class="tag">coste de operación — resuelto</span>
+          <p>Embeddings locales + DeepSeek V4-Flash con caché automático: coste estimado muy por debajo de 6-7€/mes incluso con miles de consultas. No es una barrera del proyecto.</p>
+        </div>
+      </div>
+
+      <div class="footer-note">efsa-additives-rag · documentación generada como referencia previa al scaffold del repositorio</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const tabs = document.querySelectorAll('.tab, .file-item');
+  tabs.forEach(el => {
+    el.addEventListener('click', () => {
+      const target = el.getAttribute('data-panel');
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.getAttribute('data-panel') === target));
+      document.querySelectorAll('.file-item').forEach(t => t.classList.toggle('active', t.getAttribute('data-panel') === target));
+      document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === target));
+    });
+  });
+</script>
+
+</body>
+</html>

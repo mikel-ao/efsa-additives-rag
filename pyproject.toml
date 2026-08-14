@@ -1,0 +1,8 @@
+[project]
+name = "efsa-additives-rag"
+version = "0.1.0"
+description = "RAG assistant sobre dictámenes de reevaluación de aditivos alimentarios (EFSA, Reglamento UE 257/2010)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

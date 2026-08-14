@@ -1,0 +1,26 @@
+# ingesta y datos estructurados
+pandas>=2.2
+openpyxl>=3.1
+requests>=2.32
+
+# RAG
+langchain>=0.3
+langchain-community>=0.3
+pypdf>=4.3
+sentence-transformers>=3.0
+chromadb>=0.5
+
+# orquestación
+langgraph>=0.2
+
+# LLM (DeepSeek, API compatible OpenAI)
+openai>=1.40
+
+# MCP
+mcp>=1.0
+
+# UI
+streamlit>=1.38
+
+# dev
+pytest>=8.0
