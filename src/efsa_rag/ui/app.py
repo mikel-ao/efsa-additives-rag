@@ -8,13 +8,97 @@ reindexar en local y redesplegar).
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import json
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
 
 LOCK_FILE = Path(__file__).parent.parent.parent.parent / "data" / "last_update_check.txt"
 MIN_INTERVAL = timedelta(hours=24)
+
+# --------------------------------------------------------------------- #
+# Límites de consulta -- protección de presupuesto de la API del LLM.
+#
+# Dos capas con roles distintos, no intercambiables:
+#   - Límite GLOBAL diario: la protección real del gasto. Vive en el
+#     servidor, nadie lo puede saltar. Si esto falla, el presupuesto
+#     mensual (6-7 EUR) sigue acotado porque el límite es en EUR
+#     estimados, no solo en número de consultas.
+#   - Límite por IP: mejora de UX (reparte el uso, evita que una sola
+#     persona agote el global sin querer). NO es una protección de
+#     seguridad real: usa una API interna no estable de Streamlit
+#     (get_script_run_ctx), y las IPs se comparten (redes corporativas)
+#     o se cambian (VPN) con facilidad. Trátalo como cortesía, no como
+#     candado.
+# --------------------------------------------------------------------- #
+
+USAGE_LOG = Path(__file__).parent.parent.parent.parent / "data" / "usage_log.json"
+DAILY_QUERY_LIMIT_PER_IP = 10
+DAILY_GLOBAL_QUERY_LIMIT = 200
+# Estimación conservadora (hora punta, nuevo precio DeepSeek V4-Flash
+# desde 16-ago-2026): ~$0.002/consulta. Ajustar si cambia el proveedor
+# o el precio -- ver docs/efsa-rag-proyecto.html -> STACK.json.
+ESTIMATED_COST_PER_QUERY_USD = 0.002
+DAILY_HARD_COST_CEILING_USD = 0.35  # ~7 EUR/mes repartidos en ~30 dias, con margen
+
+
+def _load_usage() -> dict:
+    if not USAGE_LOG.exists():
+        return {"date": str(date.today()), "global_count": 0, "estimated_cost_usd": 0.0, "by_ip": {}}
+    data = json.loads(USAGE_LOG.read_text())
+    if data.get("date") != str(date.today()):
+        return {"date": str(date.today()), "global_count": 0, "estimated_cost_usd": 0.0, "by_ip": {}}
+    return data
+
+
+def _save_usage(data: dict) -> None:
+    USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    USAGE_LOG.write_text(json.dumps(data))
+
+
+def _get_client_ip() -> str:
+    """Best-effort. API interna no estable -- si falla o cambia entre
+    versiones de Streamlit, degrada a 'unknown' y el sistema sigue
+    protegido por el límite global, que no depende de esto."""
+    try:
+        from streamlit import runtime
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx()
+        if ctx is None:
+            return "unknown"
+        session_info = runtime.get_instance().get_client(ctx.session_id)
+        return session_info.request.remote_ip if session_info else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def check_and_register_query() -> tuple[bool, str]:
+    """Llamar ANTES de invocar al grafo LangGraph / LLM.
+    Devuelve (permitido, mensaje_si_no_permitido).
+    """
+    data = _load_usage()
+
+    if data["estimated_cost_usd"] >= DAILY_HARD_COST_CEILING_USD:
+        return False, "Límite diario de presupuesto alcanzado. Vuelve mañana."
+
+    if data["global_count"] >= DAILY_GLOBAL_QUERY_LIMIT:
+        return False, "Límite diario de consultas alcanzado. Vuelve mañana."
+
+    ip = _get_client_ip()
+    ip_count = data["by_ip"].get(ip, 0)
+    if ip != "unknown" and ip_count >= DAILY_QUERY_LIMIT_PER_IP:
+        return False, (
+            f"Has alcanzado el límite de {DAILY_QUERY_LIMIT_PER_IP} "
+            "consultas hoy. Vuelve mañana."
+        )
+
+    data["global_count"] += 1
+    data["estimated_cost_usd"] += ESTIMATED_COST_PER_QUERY_USD
+    data["by_ip"][ip] = ip_count + 1
+    _save_usage(data)
+    return True, ""
 
 
 def _get_last_update() -> datetime | None:
@@ -72,7 +156,11 @@ def main() -> None:
 
     query = st.text_input("Pregunta sobre un aditivo (nombre o E-number)")
     if query:
-        st.info("TODO: conectar con el grafo LangGraph (efsa_rag.graph.build)")
+        permitido, mensaje = check_and_register_query()
+        if not permitido:
+            st.error(mensaje)
+        else:
+            st.info("TODO: conectar con el grafo LangGraph (efsa_rag.graph.build)")
 
     st.divider()
     render_update_section()
