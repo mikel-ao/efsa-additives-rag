@@ -73,6 +73,49 @@ FOOD_ADDITIVE_TITLE_PHRASE = "food additive"
 # aspartamo en 2011 es posterior al opinion de 2009 pero no lo reemplaza).
 VALID_OPINION_TYPES = {"EFSA opinion"}
 
+# Regulación de aditivos para PIENSO ANIMAL (FEEDAP) -- señal estructural
+# para excluir de current_reference_value_opinion dossiers mal etiquetados
+# Domain.FoodDomain == 'food additives' que en realidad son de pienso
+# animal. Investigado y verificado en sesión 17-ago-2026 (ver CLAUDE.md,
+# "Hallazgos verificados" -- bug de Sunset Yellow FCF / Olive leaf dry
+# extract): 2 de 507 filas con Domain.FoodDomain == 'food additives' en
+# todo el dataset tienen esta regulación -- Domain.Regulation es más
+# fiable que el texto del título porque es un campo estructural, no un
+# patrón de texto libre. `str.contains` en vez de igualdad exacta porque
+# el valor real incluye el sufijo "(amended)".
+ANIMAL_FEED_REGULATION_MARKER = "1831/2003"
+
+# Patrones alternativos a REEVAL_TITLE_MARKER para reevaluation_dossiers()
+# -- cierre del Grupo A (sesión 17-ago-2026, ver CLAUDE.md "Hallazgos
+# verificados"). Dictámenes vigentes reales de aditivos alimentarios (cada
+# uno confirmado como el resultado de current_reference_value_opinion para
+# al menos una sustancia -- TiO2, propionato sódico, rojo remolacha,
+# beta-caroteno, beta-apo-8'-carotenal, Allura Red AC) cuyo título no
+# contiene "re-evaluation". Cada patrón se probó contra las 11.613 filas de
+# DOSSIER enteras (cualquier dominio) antes de aceptarlo: CERO filas de
+# dominio ajeno (pesticidas, flavourings, food contact materials, novel
+# foods, piensos) sobreviven tras exigir Domain.FoodDomain ==
+# FOOD_DOMAIN_VALUE Y NOT Domain.Regulation contiene
+# ANIMAL_FEED_REGULATION_MARKER -- mismo patrón de verificación que el
+# filtro de corpus original y que el fix del Grupo B. "statement on" por sí
+# solo SÍ es demasiado amplio sin la combinación de dominio+regulación (62
+# coincidencias en todo el dataset, incluye pesticidas/contaminantes/food
+# contact materials) -- seguro solo tras esa combinación, igual que
+# "extension of use" (42 en todo el dataset, incluye novel foods bajo
+# Reglamento (UE) 2015/2283 y aditivos de pienso para lechones/salmónidos).
+# No incluye variantes de "extension of use"/"statement on" fuera de
+# food additives+regulación alimentaria -- no ampliar sin repetir esta
+# verificación.
+ADDITIONAL_REEVAL_TITLE_PATTERNS = (
+    "extension of use",
+    "statement on",
+    "reconsideration of the adi",
+)
+# Aparte porque necesita comodín entre las dos frases (texto variable en
+# medio, p.ej. "...titanium dioxide (E171) as a food additive" o
+# "...medium viscosity white mineral oils [...] as a food additive").
+SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN = r"safety assessment.*as a food additive"
+
 
 def _is_mistagged_food_additive_reevaluation(df: pd.DataFrame) -> pd.Series:
     """Filas de DOSSIER cuyo Domain.FoodDomain NO es FOOD_DOMAIN_VALUE pero
@@ -211,12 +254,22 @@ class OpenFoodToxStore:
         reevaluación de aditivos alimentarios.
 
         Domain.FoodDomain == FOOD_DOMAIN_VALUE + título con
-        REEVAL_TITLE_MARKER, MÁS el rescate compartido
+        REEVAL_TITLE_MARKER O uno de ADDITIONAL_REEVAL_TITLE_PATTERNS /
+        SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN (cierre del Grupo A, sesión
+        17-ago-2026 -- ver el comentario largo junto a
+        ADDITIONAL_REEVAL_TITLE_PATTERNS arriba), Y NOT Domain.Regulation
+        contiene ANIMAL_FEED_REGULATION_MARKER (verificado sin overlap con
+        el filtro anterior: 0 de las filas ya capturadas por
+        REEVAL_TITLE_MARKER o por el rescate de dominio tenían regulación
+        de pienso animal -- esta exclusión no cambia ningún resultado
+        previo, solo cierra la misma clase de fuga que el fix del Grupo B
+        en current_reference_value_opinion), MÁS el rescate compartido
         _is_mistagged_food_additive_reevaluation() para dictámenes reales
         etiquetados con otro Domain.FoodDomain (verificado en sesión
         16-ago-2026: 18 dictámenes reales -- acesulfamo K E950, sacarina
         E954, eritritol E968, neotamo E961, plata E174, entre otros --
-        quedaban excluidos sin este rescate; corpus pasa de 118 a 136).
+        quedaban excluidos sin este rescate; corpus pasa de 118 a 136, y de
+        136 a 162 tras el cierre del Grupo A).
 
         LIMITACIÓN CONOCIDA (documentada en docs/, no oculta): el filtro
         sigue siendo por patrón de texto en el título, no por un campo
@@ -227,28 +280,155 @@ class OpenFoodToxStore:
         """
         df = self.dossier
         is_food_domain = df["Domain.FoodDomain"] == FOOD_DOMAIN_VALUE
-        has_reeval_title = (
-            df["LiteratureReference.EFSAOutputTitle"]
-            .fillna("")
-            .str.lower()
-            .str.contains(REEVAL_TITLE_MARKER)
+        is_feed_regulation = (
+            df["Domain.Regulation"].fillna("").str.contains(ANIMAL_FEED_REGULATION_MARKER, regex=False)
         )
-        mask = (is_food_domain & has_reeval_title) | _is_mistagged_food_additive_reevaluation(df)
+        title_lower = df["LiteratureReference.EFSAOutputTitle"].fillna("").str.lower()
+
+        has_reeval_title = title_lower.str.contains(REEVAL_TITLE_MARKER)
+        has_additional_pattern = title_lower.str.contains(
+            SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN, regex=True
+        )
+        for pattern in ADDITIONAL_REEVAL_TITLE_PATTERNS:
+            has_additional_pattern = has_additional_pattern | title_lower.str.contains(
+                pattern, regex=False
+            )
+
+        mask = (
+            is_food_domain & ~is_feed_regulation & (has_reeval_title | has_additional_pattern)
+        ) | _is_mistagged_food_additive_reevaluation(df)
         return df[mask]
 
     def unique_reevaluation_opinions(self) -> pd.DataFrame:
         """Deduplica por título/DOI: una fila por dictamen, no por sustancia
         cubierta (un dictamen de grupo genera varias filas en DOSSIER,
-        una por E-number). Verificado: 136 dictámenes únicos sobre food
-        additives con 're-evaluation' en el título (o rescatados por
+        una por E-number). Verificado: 162 dictámenes únicos sobre food
+        additives con 're-evaluation' (u otro patrón de
+        ADDITIONAL_REEVAL_TITLE_PATTERNS/SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN)
+        en el título (o rescatados por
         _is_mistagged_food_additive_reevaluation, ver
         reevaluation_dossiers), a fecha del export usado en el diseño
-        (Dec-2025 cutoff de OpenFoodTox 3.0). Cifra corregida en sesión
-        16-ago-2026 -- era 118 antes de añadir el rescate de dominio mal
-        etiquetado (ver CLAUDE.md, "Hallazgos verificados").
+        (Dec-2025 cutoff de OpenFoodTox 3.0). Cifra corregida dos veces:
+        118 -> 136 en sesión 16-ago-2026 (rescate de dominio mal
+        etiquetado), 136 -> 162 en sesión 17-ago-2026 (cierre del Grupo A,
+        ver CLAUDE.md, "Hallazgos verificados").
         """
         df = self.reevaluation_dossiers()
         return df.drop_duplicates(subset=["LiteratureReference.EFSAOutputTitle"])
+
+    def current_reevaluation_corpus(self) -> pd.DataFrame:
+        """Corpus final para descarga de PDFs: `unique_reevaluation_opinions()`
+        con SUSTITUCIÓN explícita, no unión (investigado y verificado en
+        sesión 17-ago-2026, ver CLAUDE.md "Hallazgos verificados" -- cierre
+        del Grupo A, diagnóstico del "híbrido estrecho").
+
+        Por qué no basta con unir conjuntos: para 6 sustancias (Sunset
+        Yellow FCF E110, sucrose esters E473, rosemary extract E392,
+        steviol glycosides E960, calcium lignosulphonate, lycopene), el
+        dictamen que `unique_reevaluation_opinions()` capta por patrón de
+        título para esa sustancia NO es el que
+        `current_reference_value_opinion` (dominio + regulación, sin
+        exigir patrón de título) identifica como vigente. Añadir el
+        vigente sin quitar el antiguo dejaría dos entradas para la misma
+        sustancia (168 en vez de 162) en vez de corregir la
+        representación. Este método sustituye SOLO en ese caso concreto:
+        para cada sustancia cuyo vigente real NO está ya en el corpus por
+        NINGÚN patrón de título (comprobado antes de tocar nada -- si el
+        vigente ya está presente vía otro patrón, como titanio E171
+        [`SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN`] o Allura Red AC
+        [`"statement on"`], no se toca nada, el corpus se queda con AMBOS
+        documentos igual que antes), quita el/los dossier(s) que el
+        corpus tenía para esa sustancia y añade el vigente -- solo si
+        ningún OTRO dossier del corpus con esa sustancia sigue siendo
+        vigente para otra sustancia distinta (dossier de grupo
+        compartido). Verificado sin pérdida de cobertura colateral en
+        sesión 17-ago-2026: las 6 sustituciones reales son cada una 1:1
+        (ningún dossier compartido con otra sustancia). Cifra resultante:
+        **162** (mismo total que `unique_reevaluation_opinions()`, 6
+        documentos sustituidos) -- NO 168 (una unión ingenua cuenta 6 de
+        más) ni 143 (una sustitución mal acotada que trate CUALQUIER
+        dossier "ya no vigente para su sustancia" como reemplazable
+        también quita historial legítimo ya cubierto por otro patrón,
+        como el "Re-evaluation of titanium dioxide (E171)" de 2016 --
+        error descartado en esta misma sesión antes de fijar la versión
+        final).
+        """
+        base = self.unique_reevaluation_opinions()
+        base_uuids = set(base["Document UUID"])
+
+        # OJO: `unique_reevaluation_opinions()` deduplica por TÍTULO, no
+        # por UUID -- un dictamen de grupo (varias sustancias, p.ej.
+        # "Statement on Allura Red AC...") genera varias filas en DOSSIER
+        # con el MISMO título pero distinto Document UUID (una por
+        # sustancia cubierta), y `drop_duplicates` solo conserva UNA de
+        # esas UUIDs. Comparar contra `base_uuids` (el conjunto ya
+        # deduplicado) da un falso "no está en el corpus" para cualquier
+        # sustancia cuyo enlace vía toxref resuelva a una de las UUIDs
+        # DESCARTADAS por el dedup, aunque el título sí esté representado.
+        # `all_matched_uuids` usa el conjunto COMPLETO, sin deduplicar
+        # (`reevaluation_dossiers()`), para esta comprobación -- fallo
+        # real encontrado y corregido en esta misma sesión antes de
+        # fijar la versión final (ver CLAUDE.md).
+        all_matched_uuids = set(self.reevaluation_dossiers()["Document UUID"])
+
+        linked = self.dossier_docs[
+            self.dossier_docs["DOSSIER UUID"].isin(all_matched_uuids)
+            & self.dossier_docs["DOCUMENT TYPE"].isin(["FLEXIBLE_SUMMARY", "ToxRefValues"])
+        ]
+        toxref_doc_uuids = set(linked["DOCUMENT UUID"])
+        toxref_rows = self.flex_sum_toxref[
+            self.flex_sum_toxref["Document UUID"].isin(toxref_doc_uuids)
+        ]
+        substance_uuids = sorted(set(toxref_rows["Parent UUID"].dropna()))
+
+        # Vigente de cada sustancia -- una sola pasada, reutilizada tanto
+        # para decidir qué sustituir como para la comprobación de
+        # seguridad de "¿algún otro sustancia todavía necesita este
+        # dossier?" antes de quitarlo.
+        current_by_substance = {
+            suid: self.current_reference_value_opinion(suid) for suid in substance_uuids
+        }
+        still_current_dossier_uuids = {
+            current.dossier_uuid
+            for current in current_by_substance.values()
+            if current is not None
+        }
+
+        remove_titles: set[str] = set()
+        add_uuids: set[str] = set()
+
+        for suid, current in current_by_substance.items():
+            if current is None or current.dossier_uuid in all_matched_uuids:
+                # Sin vigente resoluble, o el vigente ya está capturado
+                # por el filtro de título (con esta UUID concreta o con
+                # otra fila hermana del mismo título) -- nada que
+                # sustituir.
+                continue
+
+            substance_toxref_uuids = set(
+                toxref_rows[toxref_rows["Parent UUID"] == suid]["Document UUID"]
+            )
+            old_dossier_uuids = (
+                set(linked[linked["DOCUMENT UUID"].isin(substance_toxref_uuids)]["DOSSIER UUID"])
+                & base_uuids
+            )
+            # No quitar un dossier viejo si sigue siendo el vigente real
+            # de OTRA sustancia distinta (dossier de grupo compartido).
+            safe_to_remove = old_dossier_uuids - still_current_dossier_uuids
+            remove_titles |= set(
+                base[base["Document UUID"].isin(safe_to_remove)][
+                    "LiteratureReference.EFSAOutputTitle"
+                ]
+            )
+            add_uuids.add(current.dossier_uuid)
+
+        result = base[~base["LiteratureReference.EFSAOutputTitle"].isin(remove_titles)]
+        if add_uuids:
+            add_rows = self.dossier[self.dossier["Document UUID"].isin(add_uuids)]
+            result = pd.concat([result, add_rows]).drop_duplicates(
+                subset=["LiteratureReference.EFSAOutputTitle"]
+            )
+        return result
 
     # ------------------------------------------------------------------ #
     # Nodo 3 — verificación de vigencia (determinista)
@@ -387,6 +567,18 @@ class OpenFoodToxStore:
         is_food_domain = candidates["Domain.FoodDomain"] == FOOD_DOMAIN_VALUE
         candidates = candidates[
             is_food_domain | _is_mistagged_food_additive_reevaluation(candidates)
+        ]
+
+        # Excluye dossiers de pienso animal (FEEDAP) mal etiquetados
+        # Domain.FoodDomain == 'food additives' -- ver
+        # ANIMAL_FEED_REGULATION_MARKER arriba. Verificado con Sunset
+        # Yellow FCF (E 110): sin esta exclusión, un dossier de 2022
+        # sobre un aditivo de pienso para gatos/perros/peces ornamentales
+        # ganaba MAX(fecha) y desplazaba al dictamen alimentario real.
+        candidates = candidates[
+            ~candidates["Domain.Regulation"]
+            .fillna("")
+            .str.contains(ANIMAL_FEED_REGULATION_MARKER, regex=False)
         ]
 
         if candidates.empty:

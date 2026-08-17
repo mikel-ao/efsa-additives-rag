@@ -25,6 +25,59 @@ from efsa_rag.ingestion.openfoodtox import (
     OpenFoodToxStore,
 )
 
+# Sustancias del Grupo A (sesión 17-ago-2026, ver CLAUDE.md "Hallazgos
+# verificados"): su dictamen vigente real no contiene "re-evaluation" en el
+# título, así que quedaban fuera de reevaluation_dossiers() hasta el cierre
+# del Grupo A (ADDITIONAL_REEVAL_TITLE_PATTERNS / SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN).
+GROUP_A_SUBSTANCE_NAMES = (
+    "Titanium dioxide",
+    "Sodium propionate",
+    "Beetroot Red, betanin",
+    "Beta-carotene",
+    "Beta-apo-8'-carotenal (C 30)",
+    "Allura Red AC",
+)
+
+# Sustancias del "híbrido estrecho" (sesión 17-ago-2026, ver CLAUDE.md
+# "Hallazgos verificados" -- diagnóstico del híbrido tras el cierre del
+# Grupo A): tienen algún dossier en el corpus por patrón de título, pero
+# su dictamen REALMENTE vigente (current_reference_value_opinion) es un
+# documento DISTINTO, no capturado por ningún patrón. current_reevaluation_corpus()
+# debe sustituir el documento viejo por el vigente para cada una, no
+# añadir el vigente como entrada adicional (sustitución 1:1, no unión).
+NARROW_HYBRID_SUBSTITUTIONS = {
+    "Sunset Yellow FCF": (
+        "Scientific Opinion on the re-evaluation of Sunset Yellow FCF (E 110) as a food additive",
+        "Reconsideration of the temporary ADI and refined exposure assessment for Sunset Yellow FCF (E110)",
+    ),
+    "Sucrose esters of fatty acids": (
+        "Scientific Opinion on the safety of sucrose esters of fatty acids prepared from "
+        "vinyl esters of fatty acids and on the extension of use of sucrose esters of fatty "
+        "acids in flavourings",
+        "Refined exposure assessment of sucrose esters of fatty acids (E 473) from its use as a food additive",
+    ),
+    "Rosemary extract liquid of natural origin": (
+        "Extension of use of extracts of rosemary (E 392) in fat-based spreads",
+        "Refined exposure assessment of extracts of rosemary (E 392) from its use as food additive",
+    ),
+    "Steviol glycosides": (
+        "Scientific opinion on the safety of the extension of use of steviol glycosides (E 960) as a food additive",
+        "Safety of a proposed amendment of the specifications for steviol glycosides (E 960) as "
+        "a food additive: to expand the list of steviol glycosides to all those identified in "
+        "the leaves of Stevia Rebaudiana Bertoni",
+    ),
+    "Calcium lignosulphonate (40-65)": (
+        "Statement on the safety of calcium lignosulphonate (40-65) as a food additive",
+        "Scientific Opinion on the use of calcium lignosulphonate (40-65) as a carrier for "
+        "vitamins and carotenoids",
+    ),
+    "Lycopene": (
+        "Statement on the divergence between the risk assessment of lycopene by EFSA and the "
+        "Joint FAO/WHO Expert Committee on Food Additives(JECFA)",
+        "Use of lycopene as a food colour",
+    ),
+}
+
 XLSX_PATH = Path(__file__).parent.parent / "data" / "raw" / "OFT3_0_export_repository.xlsx"
 
 pytestmark = pytest.mark.skipif(
@@ -129,22 +182,193 @@ def test_silver_current_opinion_includes_mistagged_domain_followup(store: OpenFo
     assert "silver" in result.title.lower()
 
 
+def test_sunset_yellow_current_opinion_excludes_feed_regulation_dossier(
+    store: OpenFoodToxStore,
+):
+    """Caso de regresión del bug de Grupo B (sesión 17-ago-2026, ver
+    CLAUDE.md): un dossier de 2022 sobre un aditivo de PIENSO ANIMAL
+    ("Safety and efficacy of a feed additive consisting of Sunset Yellow
+    FCF for cats and dogs, ornamental fish...") está mal etiquetado
+    Domain.FoodDomain == 'food additives' pese a tener
+    Domain.Regulation == 'Regulation (EC) No 1831/2003' (regulación de
+    pienso animal, FEEDAP). Antes del fix, ganaba MAX(fecha) y
+    desplazaba al dictamen alimentario real. Tras excluir por
+    Domain.Regulation, el resultado esperado es el dictamen de 2014
+    ("Reconsideration of the temporary ADI and refined exposure
+    assessment for Sunset Yellow FCF (E110)") -- el 'EFSA opinion' de
+    dominio alimentario más reciente tras la exclusión (más reciente que
+    el de 2009, que sí lleva "re-evaluation" en el título pero fue
+    reconsiderado/refinado por el de 2014).
+    """
+    substance_uuid = store.substance_uuid_by_name("Sunset Yellow FCF")
+    assert substance_uuid is not None
+
+    result = store.current_reference_value_opinion(substance_uuid)
+
+    assert result is not None
+    assert result.date_of_evaluation.isoformat().startswith("2014-06-26")
+    assert "sunset yellow" in result.title.lower()
+    assert "cats and dogs" not in result.title.lower()
+    assert "feed additive" not in result.title.lower()
+
+
+def test_olive_leaf_extract_has_no_real_food_additive_opinion(store: OpenFoodToxStore):
+    """Segundo caso del bug de Grupo B (sesión 17-ago-2026): "Olive leaf
+    dry extract from O. europaea L." no tiene NINGÚN dictamen de aditivo
+    alimentario real en el dataset -- su única fila en DOSSIER es un
+    dossier de pienso animal ("...used as a sensory additive in feed for
+    all animal species", 2020-01-28) mal etiquetado Domain.FoodDomain ==
+    'food additives'. A diferencia de Sunset Yellow FCF, aquí no hay
+    ningún dictamen alimentario real que "recuperar" tras excluir el de
+    pienso animal -- el resultado correcto es None (sin dictamen
+    vigente), no inventar relevancia alimentaria con el dossier de
+    pienso. Nodo 3 (verify_currency_node) ya marca vigencia_ambigua=True
+    en ese caso, y el Nodo 4 (_format_structured_result) ya devuelve un
+    mensaje explícito de "no se ha podido determinar un dictamen
+    vigente" en vez de simular que lo hay -- este test bloquea que un
+    futuro cambio vuelva a colar el dossier de pienso animal como si
+    fuera un dictamen alimentario válido.
+    """
+    substance_uuid = store.substance_uuid_by_name(
+        "Olive leaf dry extract from O. europaea L."
+    )
+    assert substance_uuid is not None
+
+    result = store.current_reference_value_opinion(substance_uuid)
+
+    assert result is None
+
+
 def test_reevaluation_corpus_is_approximately_expected_size(store: OpenFoodToxStore):
     """No es un test de igualdad exacta -- el corpus crece con el tiempo
     (programa de reevaluación sigue activo en 2026). Es una alarma de
     regresión: si el número cae muy por debajo de lo verificado en sesión
-    16-ago-2026 (136, tras corregir el filtro de dominio -- ver
-    CLAUDE.md), algo se ha roto en el filtro, no en los datos de EFSA.
+    17-ago-2026 (162, tras el cierre del Grupo A -- ver CLAUDE.md), algo
+    se ha roto en el filtro, no en los datos de EFSA.
 
-    Umbral subido de 110 a 130 al corregir 118->136: con 110 el test
-    seguía en verde aunque el fix de dominio se rompiera del todo y el
-    corpus volviera a caer a 118 -- ya no protegía nada real.
+    Umbral subido de 110 a 130 al corregir 118->136 (sesión 16-ago-2026),
+    y de 130 a 150 al corregir 136->162 (sesión 17-ago-2026, cierre del
+    Grupo A): en ambos casos, con el umbral anterior el test seguía en
+    verde aunque el fix correspondiente se rompiera del todo y el corpus
+    volviera a caer al valor previo -- ya no protegía nada real.
     """
     unique_opinions = store.unique_reevaluation_opinions()
-    assert len(unique_opinions) >= 130, (
+    assert len(unique_opinions) >= 150, (
         "El corpus de dictámenes de reevaluación es sospechosamente pequeño "
-        "-- revisar si el filtro Domain.FoodDomain + 're-evaluation' en "
-        "título (o el rescate de dominio mal etiquetado,"
-        " _is_mistagged_food_additive_reevaluation) sigue siendo válido "
-        "para la versión del xlsx en uso."
+        "-- revisar si el filtro Domain.FoodDomain + 're-evaluation'/"
+        "ADDITIONAL_REEVAL_TITLE_PATTERNS en título (o el rescate de "
+        "dominio mal etiquetado, _is_mistagged_food_additive_reevaluation) "
+        "sigue siendo válido para la versión del xlsx en uso."
     )
+
+
+def test_group_a_substances_current_opinion_is_in_reevaluation_corpus(
+    store: OpenFoodToxStore,
+):
+    """Caso de regresión del cierre del Grupo A (sesión 17-ago-2026, ver
+    CLAUDE.md): antes de ampliar reevaluation_dossiers() con
+    ADDITIONAL_REEVAL_TITLE_PATTERNS / SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN,
+    el dictamen vigente real de estas 6 sustancias (devuelto por
+    current_reference_value_opinion, que nunca exigió "re-evaluation" en
+    el título) no estaba en el corpus que define reevaluation_dossiers()
+    -- title patterns como "extension of use", "statement on",
+    "reconsideration of the ADI" o "safety assessment... as a food
+    additive" no se reconocían como sinónimos válidos. Este test bloquea
+    que una futura regresión del filtro vuelva a excluirlas.
+    """
+    corpus_uuids = set(store.reevaluation_dossiers()["Document UUID"])
+
+    for name in GROUP_A_SUBSTANCE_NAMES:
+        substance_uuid = store.substance_uuid_by_name(name)
+        assert substance_uuid is not None, f"Sustancia no encontrada: {name!r}"
+
+        result = store.current_reference_value_opinion(substance_uuid)
+        assert result is not None, f"Sin dictamen vigente para {name!r}"
+        assert result.dossier_uuid in corpus_uuids, (
+            f"El dictamen vigente de {name!r} ({result.title!r}) no está "
+            "en reevaluation_dossiers() -- el fix de cierre del Grupo A "
+            "se ha roto."
+        )
+
+
+def test_current_reevaluation_corpus_is_same_size_as_title_corpus(
+    store: OpenFoodToxStore,
+):
+    """current_reevaluation_corpus() sustituye 6 documentos (ver
+    NARROW_HYBRID_SUBSTITUTIONS), no los añade -- el tamaño final debe
+    seguir siendo 162, igual que unique_reevaluation_opinions(). Si este
+    test empieza a fallar con 168, la sustitución se ha roto y ha vuelto
+    a comportarse como una unión de conjuntos (bug ya corregido una vez
+    en sesión 17-ago-2026, ver CLAUDE.md). Si falla con un número mucho
+    más bajo (p.ej. 143), la comprobación de "ya capturado por el filtro
+    de título" está usando el conjunto YA DEDUPLICADO por título en vez
+    del conjunto completo -- un dictamen de grupo (varias filas DOSSIER
+    con el mismo título, distinto Document UUID) da un falso negativo y
+    se sustituyen de más documentos que sí seguían vigentes (otro bug ya
+    corregido una vez, mismo día).
+    """
+    title_corpus = store.unique_reevaluation_opinions()
+    final_corpus = store.current_reevaluation_corpus()
+
+    assert len(final_corpus) == len(title_corpus), (
+        f"current_reevaluation_corpus() devolvió {len(final_corpus)} "
+        f"dictámenes, se esperaban {len(title_corpus)} (mismo tamaño que "
+        "unique_reevaluation_opinions() -- sustitución 1:1, no unión ni "
+        "sobre-poda)."
+    )
+
+
+def test_current_reevaluation_corpus_substitutes_narrow_hybrid_cases(
+    store: OpenFoodToxStore,
+):
+    """Para cada una de las 6 sustancias del híbrido estrecho (sesión
+    17-ago-2026), current_reevaluation_corpus() debe contener el
+    dictamen vigente real y NO el documento viejo que
+    unique_reevaluation_opinions() tenía para esa sustancia -- una
+    sustitución explícita, no una entrada añadida junto a la vieja.
+    """
+    final_titles = set(
+        store.current_reevaluation_corpus()["LiteratureReference.EFSAOutputTitle"]
+    )
+
+    for substance_name, (old_title, new_title) in NARROW_HYBRID_SUBSTITUTIONS.items():
+        assert new_title in final_titles, (
+            f"{substance_name!r}: falta el dictamen vigente real "
+            f"({new_title!r}) en current_reevaluation_corpus()."
+        )
+        assert old_title not in final_titles, (
+            f"{substance_name!r}: el documento viejo ({old_title!r}) "
+            "sigue en current_reevaluation_corpus() -- debía haber sido "
+            "sustituido, no coexistir con el vigente."
+        )
+
+
+def test_current_reevaluation_corpus_keeps_substances_already_well_represented(
+    store: OpenFoodToxStore,
+):
+    """Sustancias cuyo dictamen vigente YA está en el corpus por otro
+    patrón de título (p.ej. titanio E171: "re-evaluation" de 2016 +
+    "safety assessment...as a food additive" de 2021, ambos ya en el
+    corpus) NO deben perder su documento histórico -- solo se sustituye
+    cuando el vigente real está genuinamente ausente. Bloquea la
+    regresión encontrada en sesión 17-ago-2026 donde una primera versión
+    de current_reevaluation_corpus() sobre-podaba el corpus a 143
+    quitando documentos históricos legítimos de sustancias como titanio,
+    Allura Red AC o ácido sórbico que ya tenían su vigente representado.
+    """
+    final_titles = set(
+        store.current_reevaluation_corpus()["LiteratureReference.EFSAOutputTitle"]
+    )
+
+    still_expected_titles = (
+        "Re-evaluation of titanium dioxide (E 171) as a food additive",
+        "Safety assessment of titanium dioxide (E171) as a food additive",
+        "Scientific Opinion on the re-evaluation of Allura Red AC (E 129) as a food additive",
+        "Statement on Allura Red AC and other sulphonated mono azo dyes authorised as food and feed additives.",
+    )
+    for title in still_expected_titles:
+        assert title in final_titles, (
+            f"{title!r} desapareció de current_reevaluation_corpus() -- "
+            "no debía tocarse, su sustancia ya tenía el vigente "
+            "representado por otro patrón de título."
+        )
