@@ -88,6 +88,12 @@ class DeepSeekClient(LLMClient):
             ],
             max_tokens=max_tokens,
             temperature=temperature,
+            # DeepSeek V4 activa 'thinking' (esfuerzo 'high') por defecto:
+            # gasta max_tokens en reasoning_content antes del texto final
+            # (riesgo de truncamiento) e ignora silenciosamente temperature.
+            # Lo desactivamos para que temperature=0.0 aplique de verdad y
+            # el coste real se acerque a la estimación de docs/.
+            extra_body={"thinking": {"type": "disabled"}},
         )
         choice = response.choices[0]
         usage = response.usage

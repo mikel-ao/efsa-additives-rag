@@ -392,7 +392,7 @@
           </div>
           <div class="flow-arrow">+</div>
           <div class="flow-box">
-            <div class="n">PDFs de dictámenes de reevaluación (~118 documentos únicos)</div>
+            <div class="n">PDFs de dictámenes de reevaluación (~136 documentos únicos)</div>
             <div class="d">Fuente para lo cualitativo: discusión de incertidumbre, razonamiento del panel, por qué cambió un valor entre reevaluaciones.</div>
           </div>
         </div>
@@ -495,7 +495,7 @@ con margen incorporado, <span class="k">no</span> un umbral de toxicidad.
           <div class="step-num">1</div>
           <div class="step-body">
             <strong>QA final del corpus <span class="status pending">pendiente</span></strong>
-            <p>Cruzar los 118 dictámenes filtrados (<code>Domain.FoodDomain == 'food additives'</code> + "re-evaluation" en título) contra las calls for data activas conocidas (ribonucleótidos E626-635, ácido glucónico E574-579, aditivos en forma gaseosa) para detectar huecos.</p>
+            <p>Cruzar los 136 dictámenes filtrados (<code>Domain.FoodDomain == 'food additives'</code> + "re-evaluation" en título, más el rescate de dictámenes reales mal etiquetados con otro dominio) contra las calls for data activas conocidas (ribonucleótidos E626-635, ácido glucónico E574-579, aditivos en forma gaseosa) para detectar huecos.</p>
           </div>
         </div>
 
@@ -571,7 +571,7 @@ con margen incorporado, <span class="k">no</span> un umbral de toxicidad.
 
         <div class="callout warn">
           <span class="tag">cobertura del corpus no verificada al 100%</span>
-          <p>Los 118 dictámenes se obtuvieron filtrando por dominio + patrón de texto en el título ("re-evaluation"), no por un campo estructural fiable. No existe una tabla pública única de EFSA para validar 1:1. Riesgo de falsos negativos si algún dictamen usa otra terminología en el título.</p>
+          <p>Los 136 dictámenes se obtuvieron filtrando por dominio + patrón de texto en el título ("re-evaluation"), con un rescate adicional para dictámenes reales mal etiquetados con otro dominio (18 casos: acesulfamo K, sacarina, plata E174 entre otros) — no por un campo estructural fiable. No existe una tabla pública única de EFSA para validar 1:1. Riesgo de falsos negativos si algún dictamen usa otra terminología en el título.</p>
         </div>
 
         <div class="callout warn">
