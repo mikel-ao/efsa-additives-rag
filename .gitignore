@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 data/raw/*.xlsx
+data/raw/pdfs/
 data/processed/
 data/chroma/
 data/last_update_check.txt

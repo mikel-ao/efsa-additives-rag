@@ -502,8 +502,8 @@ con margen incorporado, <span class="k">no</span> un umbral de toxicidad.
         <div class="step">
           <div class="step-num">2</div>
           <div class="step-body">
-            <strong>Descarga y organización de PDFs</strong>
-            <p>Script de descarga desde los DOIs recuperados en <code>DOSSIER</code>. Estructura de carpetas por E-number / año.</p>
+            <strong>Descarga manual asistida por checklist <span class="status pending">en curso</span></strong>
+            <p>No es un script de descarga automatizado: las 3 fuentes probadas (Wiley directo vía DOI, <code>efsa.europa.eu</code>, PubMed Central) bloquean peticiones automatizadas -- Wiley con un <em>challenge</em> de Cloudflare sin excepción, <code>efsa.europa.eu</code> porque solo redirige a la misma Wiley, y PMC con falsos positivos de búsqueda por DOI, necesidad de <code>curl</code> en vez de <code>requests</code>, y captcha intermitente incluso así. El bloqueo es específico de peticiones automatizadas -- un navegador con sesión humana normal no debería toparse con el mismo <em>challenge</em>, así que la descarga es manual. Checklist generado (<code>scripts/generate_pdf_checklist.py</code> → <code>data/pdf_download_checklist.csv</code> / <code>.md</code>) con sustancia, E-number, DOI, título, nombre de archivo esperado y columna para marcar progreso -- 161 dictámenes únicos (el corpus de 162 tiene un duplicado real por una errata de título en el xlsx, ver CLAUDE.md).</p>
           </div>
         </div>
 

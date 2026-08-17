@@ -508,3 +508,137 @@ referenciarla).
 
 **Pendiente / sin resolver al cierre de esta entrada:**
 - Sin cambios en Nodo 2, Nodo 1, servidor MCP, deploy esta sesión.
+
+## 2026-08-17 (continuación) — Arranque de la descarga de PDFs, Wiley descartado como fuente directa
+
+**Contexto:** con `current_reevaluation_corpus()` cerrado, se empezó el
+pendiente #4 (descarga de PDFs). Antes de escribir el descargador
+completo, se pidió un script de sondeo `--dry-run` (script nuevo:
+`scripts/probe_dossier_urls.py`, respeta la regla de CLAUDE.md de
+límite explícito + pausa entre peticiones para scripts en lote) sobre
+5 DOIs de ejemplo (aspartamo E 951 + 4 más de `current_reevaluation_corpus()`),
+para ver a qué URL resuelve cada DOI y qué tipo de contenido devuelve
+antes de comprometerse a una implementación.
+
+**Encontrado: Wiley bloquea las 5 peticiones de prueba, no es ruido.**
+Los DOIs resuelven bien vía `doi.org` a
+`https://onlinelibrary.wiley.com/doi/<doi>`, pero las 5 devuelven `403`
+con cabecera `cf-mitigated: challenge` -- un desafío activo de
+Cloudflare que requiere ejecución de JS, no resoluble con
+`requests`/`curl` sin importar las cabeceras (probado también con
+User-Agent de navegador real, mismo resultado; `robots.txt` de Wiley
+tampoco lo explica -- el path `/doi/` no está en `Disallow`).
+Documentado en CLAUDE.md, "Hallazgos verificados", con el resultado
+completo del sondeo.
+
+**Pendiente / en curso al cierre de esta entrada:** investigando dos
+rutas alternativas antes de considerar un navegador headless
+(Playwright/Selenium, más frágil y con más zona gris de ToS que una
+petición HTTP simple):
+1. `efsa.europa.eu/en/efsajournal/pub/<referencia>` -- páginas propias
+   de EFSA por dictamen. Falta averiguar cómo se deriva esa
+   "referencia" a partir del DOI o título ya disponibles (no parece
+   una transformación directa del DOI), y si esa página aloja el PDF
+   directamente sin redirigir a Wiley.
+2. PubMed Central (`pmc.ncbi.nlm.nih.gov`) -- posibles copias espejo
+   de EFSA Journal bajo licencia CC BY-ND. Falta comprobar si se puede
+   buscar por DOI/título vía la API de Entrez/PMC para encontrar el
+   PMCID correspondiente, y si el PDF completo es descargable desde
+   ahí sin bloqueo.
+
+**Investigadas ambas rutas (script nuevo: `scripts/probe_alternate_sources.py`,
+mismo estilo dry-run + límite + pausa que el anterior), con los mismos
+5 DOIs de prueba:**
+
+- **`efsa.europa.eu` descartado.** La "referencia" de
+  `efsa.europa.eu/en/efsajournal/pub/<referencia>` es el último
+  segmento numérico del DOI (confirmado con el caso real de aspartamo
+  por búsqueda web antes de asumirlo). Pero la URL resultante hace
+  `301 redirect` a `efsa.onlinelibrary.wiley.com/doi/<doi>` -- un
+  subdominio de Wiley distinto pero con el MISMO bloqueo (`403` +
+  `cf-mitigated: challenge`). No es una fuente independiente, es un
+  alias que redirige a Wiley.
+- **PubMed Central: parcialmente viable, pero NO fiable sin más
+  trabajo.** Tres problemas encontrados, cada uno relevante por
+  separado:
+  1. La búsqueda de PMCID por DOI (ESearch `[DOI]`) da falsos
+     positivos -- de los 5 DOIs de prueba, solo 2 PMCIDs encontrados
+     correspondían realmente al documento solicitado al verificar
+     `citation_doi` en la página. El caso de aspartamo (referencia del
+     proyecto) apuntó a un artículo de Scientific Reports 2025 sobre
+     cálculos renales sin relación real; el de Quillaia extract apuntó
+     a un documento real pero equivocado (follow-up 2024, no el
+     dictamen 2019 pedido).
+  2. Cuando el PMCID es correcto, la página SÍ es accesible -- pero
+     solo con `curl`, no con `requests` de Python, para la misma URL y
+     el mismo User-Agent (403 consistente con `requests`, 200
+     consistente con `curl`; descartado que sea HTTP/1.1 vs HTTP/2).
+     Necesitaría `curl` por subproceso o una librería con fingerprint
+     TLS equivalente (`curl_cffi`), no `requests` a secas.
+  3. Incluso así, no es 100% estable -- 1 de los 5 PMCIDs devolvió una
+     página de reCAPTCHA en vez del artículo, sin determinar la causa.
+
+**Conclusión de esta sesión: ninguna de las tres rutas probadas hasta
+ahora (Wiley directo, `efsa.europa.eu`, PMC) es una solución limpia.**
+Wiley está bloqueado sin excepción. PMC es parcialmente accesible pero
+con cobertura incompleta y riesgo de falsos positivos que exigen
+verificación por DOI antes de confiar en cualquier resultado. Detalle
+completo en CLAUDE.md, "Hallazgos verificados".
+
+**Decisión tomada (misma sesión, cierre de la exploración automatizada):
+descarga MANUAL vía navegador normal, no automatizada.** De las 3
+fuentes probadas (Wiley directo, `efsa.europa.eu`, PMC), ninguna
+permite descarga automatizada fiable -- resumen: Wiley bloquea con
+*challenge* de Cloudflare sin excepción; `efsa.europa.eu` solo
+redirige a la misma Wiley; PMC tiene falsos positivos de búsqueda por
+DOI, exige `curl` en vez de `requests`, y aun así da captcha
+intermitente. El bloqueo es específico de peticiones automatizadas --
+un navegador con sesión humana normal no debería toparse con el mismo
+*challenge*. Se descarta explícitamente un navegador headless
+(Playwright/Selenium): más frágil, zona gris de ToS, y 162 documentos
+(una vez cada uno) no justifican esa complejidad frente a descarga
+manual asistida por checklist.
+
+**Roadmap actualizado:** el paso 2 (`docs/efsa-rag-proyecto.html`, antes
+"Descarga y organización de PDFs" / "script de descarga") pasa a
+"Descarga manual asistida por checklist". Mismo cambio reflejado en
+CLAUDE.md, pendiente #4 de "Estado del código".
+
+**Checklist generado:** script nuevo `scripts/generate_pdf_checklist.py`
+(sin peticiones de red, solo lee el xlsx) produce
+`data/pdf_download_checklist.csv` y `data/pdf_download_checklist.md`
+con columnas sustancia(s), E-number(s), DOI, título, nombre de archivo
+de destino esperado (`<E-numbers>_<DOI saneado>.pdf`) y `descargado`
+vacía para que el usuario marque progreso.
+
+**Dos hallazgos de calidad de datos encontrados al generar el
+checklist** (no vistos en las fases anteriores de esta sesión):
+1. `LiteratureReference.LinkToPersistentIdentifier` no es consistente
+   en el xlsx -- 147 filas con prefijo `"doi:"`, 15 con `"doi. org/"`
+   (con espacio, sin dos puntos). Normalizado anclando en el propio
+   DOI (`10\.\d+/...`), no en el prefijo.
+2. **El corpus de 162 tiene un duplicado real -- son 161 documentos
+   únicos, no 162.** "Re-evaluation of saccharin and its sodium,
+   potassium and calcium salts (E 954)..." aparece dos veces en el
+   xlsx con el MISMO DOI, por una variante de título con una errata de
+   espacio ("and calcium salts" / "andcalcium salts") --
+   `reevaluation_dossiers()`/`unique_reevaluation_opinions()`
+   deduplican por texto exacto de título, así que la errata cuela como
+   fila adicional. El checklist deduplica por DOI antes de escribir
+   (161 filas), prefiriendo la fila con sustancia resuelta vía toxref
+   -- que resultó ser la de la errata, no la del título "correcto",
+   verificado antes de decidir cuál descartar. **No corregido en
+   `current_reevaluation_corpus()` en esta sesión** (el checklist ya
+   lo maneja correctamente; deduplicar por DOI en el corpus en sí
+   queda como mejora pendiente, no bloqueante).
+
+Detalle completo de las 3 fuentes investigadas y ambos hallazgos en
+CLAUDE.md, "Hallazgos verificados".
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Descarga real de los 161 PDFs -- trabajo manual del usuario, no
+  completado en esta sesión (obviamente).
+- Deduplicar por DOI en `current_reevaluation_corpus()`/
+  `unique_reevaluation_opinions()` en vez de por título -- mejora
+  pendiente, no bloqueante (el checklist ya compensa el caso conocido).
+- Sin cambios en Nodo 1, Nodo 2, servidor MCP, deploy esta sesión.
