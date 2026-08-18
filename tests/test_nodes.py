@@ -23,26 +23,40 @@ tests de este archivo, estos SÍ hacen una llamada real y FACTURADA a la
 API de DeepSeek en cada ejecución (coste mínimo, unas pocas decenas de
 tokens de entrada/salida) -- no son gratis como los que solo dependen
 de un recurso local ya descargado.
+
+Los tests de `generate_answer_node` (Nodo 4) usan un `_StubLLMClient`
+(implementa `LLMClient` sin llamar a ninguna API) que devuelve una
+secuencia fija de `LLMResponse` -- no dependen de xlsx, Chroma ni
+`DEEPSEEK_API_KEY`, y no gastan tokens reales. Existen específicamente
+para codificar como test de regresión el bug de truncamiento silencioso
+encontrado con una respuesta real sobre Shellac (sesión 18-ago-2026,
+ver CLAUDE.md/PROGRESS.md): antes de ese fix, un `finish_reason ==
+'length'` se devolvía al usuario cortado a mitad de frase sin ningún
+aviso.
 """
 
 from pathlib import Path
 
 import pytest
 
+from efsa_rag.graph.llm_client import LLMClient, LLMResponse
 from efsa_rag.graph.nodes import (
     DEFAULT_RETRIEVAL_K,
+    NODE_4_MAX_TOKENS,
+    NODE_4_RETRY_MAX_TOKENS,
     NodeDependencies,
     RetrievedChunk,
     _format_retrieved_chunks,
     _format_structured_result,
     extract_entity_node,
+    generate_answer_node,
     hybrid_retrieval_node,
 )
+from efsa_rag.ingestion.embedding_model import load_embedding_model
 from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore
 
 CHROMA_PERSIST_DIR = Path(__file__).parent.parent / "data" / "chroma"
 CHROMA_COLLECTION_NAME = "efsa_reevaluation_chunks"
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 XLSX_PATH = Path(__file__).parent.parent / "data" / "raw" / "OFT3_0_export_repository.xlsx"
 
@@ -166,11 +180,10 @@ def chroma_deps(store: OpenFoodToxStore) -> NodeDependencies:
             "scripts/build_chroma_index.py --all)"
         )
     import chromadb
-    from sentence_transformers import SentenceTransformer
 
     client = chromadb.PersistentClient(path=str(CHROMA_PERSIST_DIR))
     collection = client.get_collection(CHROMA_COLLECTION_NAME)
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    model = load_embedding_model()
     return NodeDependencies(store=store, vectorstore=collection, embedding_model=model)
 
 
@@ -277,3 +290,146 @@ def test_extract_entity_node_unrelated_query_resolves_to_none(store: OpenFoodTox
 
     assert new_state["substance_name"] is None
     assert new_state["substance_uuid"] is None
+
+
+# --------------------------------------------------------------------- #
+# Nodo 4 -- generate_answer_node (truncamiento, sesión 18-ago-2026)
+# --------------------------------------------------------------------- #
+
+
+class _StubLLMClient(LLMClient):
+    """Devuelve una secuencia fija de `LLMResponse`, una por llamada a
+    `complete()` -- para forzar deterministamente un `finish_reason ==
+    'length'` sin depender de que una llamada real trunque por
+    casualidad ni gastar tokens reales. Registra los `max_tokens` de
+    cada llamada para poder verificar que el reintento usa
+    `NODE_4_RETRY_MAX_TOKENS`, no el tope normal."""
+
+    def __init__(self, responses: list[LLMResponse]):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def complete(
+        self,
+        *,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: int = 800,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        self.calls.append({"max_tokens": max_tokens, "temperature": temperature})
+        if not self._responses:
+            raise AssertionError(
+                "generate_answer_node llamó a complete() más veces de las esperadas "
+                "-- debe reintentar como mucho UNA vez, no en bucle"
+            )
+        return self._responses.pop(0)
+
+
+def _base_state(**overrides) -> dict:
+    state = {
+        "user_query": "What is the ADI of shellac and what study is it based on?",
+        "substance_name": "Shellac",
+        "structured_result": None,
+        "retrieved_chunks": None,
+    }
+    state.update(overrides)
+    return state
+
+
+def test_generate_answer_node_retries_once_on_truncation_and_succeeds():
+    """Primera pasada trunca (finish_reason == 'length', mismo síntoma
+    exacto que el caso real de Shellac); la segunda pasada (reintento)
+    termina sola. La respuesta final debe ser la del reintento, completa,
+    SIN la nota de "[respuesta incompleta...]" -- el reintento cubrió el
+    hueco, no hay que avisar de nada."""
+    client = _StubLLMClient(
+        [
+            LLMResponse(
+                text="El ADI de la goma laca es... (cortada a mitad de fra",
+                input_tokens=500,
+                output_tokens=800,
+                model="stub",
+                finish_reason="length",
+            ),
+            LLMResponse(
+                text="El ADI de la goma laca no está establecido numéricamente. Conclusión completa.",
+                input_tokens=500,
+                output_tokens=845,
+                model="stub",
+                finish_reason="stop",
+            ),
+        ]
+    )
+    deps = NodeDependencies(store=None, llm_client=client)
+
+    new_state = generate_answer_node(_base_state(), deps)
+
+    assert new_state["answer"] == (
+        "El ADI de la goma laca no está establecido numéricamente. Conclusión completa."
+    )
+    assert "[respuesta incompleta" not in new_state["answer"]
+    assert len(client.calls) == 2
+    assert client.calls[0]["max_tokens"] == NODE_4_MAX_TOKENS
+    assert client.calls[1]["max_tokens"] == NODE_4_RETRY_MAX_TOKENS
+
+
+def test_generate_answer_node_appends_notice_if_retry_also_truncates():
+    """Si incluso el reintento con más presupuesto sigue truncado, el
+    nodo NUNCA debe devolver el texto cortado sin avisar (el bug real
+    encontrado con Shellac antes de este fix) -- debe reintentar
+    exactamente UNA vez (no en bucle, verificado por `_StubLLMClient`
+    lanzando si se le llama una tercera vez) y añadir la nota visible al
+    final."""
+    client = _StubLLMClient(
+        [
+            LLMResponse(
+                text="Primera pasada cortada",
+                input_tokens=500,
+                output_tokens=800,
+                model="stub",
+                finish_reason="length",
+            ),
+            LLMResponse(
+                text="Segunda pasada (reintento) también cortada",
+                input_tokens=500,
+                output_tokens=3500,
+                model="stub",
+                finish_reason="length",
+            ),
+        ]
+    )
+    deps = NodeDependencies(store=None, llm_client=client)
+
+    new_state = generate_answer_node(_base_state(), deps)
+
+    assert new_state["answer"] == (
+        "Segunda pasada (reintento) también cortada\n\n"
+        "[respuesta incompleta por límite de longitud]"
+    )
+    assert len(client.calls) == 2
+    assert client.calls[1]["max_tokens"] == NODE_4_RETRY_MAX_TOKENS
+
+
+def test_generate_answer_node_no_retry_when_first_response_is_not_truncated():
+    """Camino normal (sin truncamiento) -- una sola llamada, sin
+    reintento ni nota añadida. Confirma que el fix no introduce un
+    reintento innecesario en el caso común."""
+    client = _StubLLMClient(
+        [
+            LLMResponse(
+                text="Respuesta completa sin truncar.",
+                input_tokens=500,
+                output_tokens=200,
+                model="stub",
+                finish_reason="stop",
+            ),
+        ]
+    )
+    deps = NodeDependencies(store=None, llm_client=client)
+
+    new_state = generate_answer_node(_base_state(), deps)
+
+    assert new_state["answer"] == "Respuesta completa sin truncar."
+    assert len(client.calls) == 1
+    assert client.calls[0]["max_tokens"] == NODE_4_MAX_TOKENS

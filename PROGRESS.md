@@ -2603,3 +2603,617 @@ documentados en CLAUDE.md.
   llamada real que trunque por casualidad).
 - Detección de ambigüedad en el Nodo 3: sigue diferida (sin cambios).
 - Servidor MCP, deploy: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 13) — CLAUDE.md excedía el límite de 150k de Claude Code; reestructurado con docs/DECISIONES_VERIFICADAS.md
+
+**Contexto:** `CLAUDE.md` llegó a 179.223 caracteres, por encima del
+límite de 150k que Claude Code exige para cargarlo sin problema en cada
+sesión. Se pidió reestructurar: mover el contenido evidencial extenso de
+la sección "Hallazgos verificados" (tablas de datos, párrafos de
+justificación completos, bloques `[CORRECCIÓN...]`) a un archivo nuevo,
+conservando cada hallazgo íntegro -- nada resumido ni perdido, solo
+movido -- y dejar en `CLAUDE.md` las restricciones no negociables tal
+cual, un resumen de 1-2 frases por hallazgo con puntero al detalle, y
+"Estado del código" sin tocar.
+
+**Implementado:**
+- `docs/DECISIONES_VERIFICADAS.md` (nuevo, 118.075 caracteres): el
+  texto íntegro de "Hallazgos verificados" (23 hallazgos de nivel
+  superior), con una cabecera explicando su relación con `CLAUDE.md` y
+  cuándo consultarlo. **Verificado con `diff` que el contenido movido es
+  byte a byte idéntico al original** -- no se resumió ni se reescribió
+  nada al trasladarlo, solo se cortó del archivo original y se pegó con
+  una cabecera nueva delante.
+- `CLAUDE.md` reducido a 70.453 caracteres (de 179.223): restricciones
+  no negociables intactas, "Hallazgos verificados" reemplazado por un
+  resumen de 1-2 frases por cada uno de los 23 hallazgos (mismo orden
+  que en el archivo nuevo, con puntero explícito a
+  `docs/DECISIONES_VERIFICADAS.md`), "Decisiones de arquitectura ya
+  tomadas" y "Estado del código" sin cambios.
+
+**Objetivo de 30-40k NO alcanzado, señalado explícitamente al usuario en
+vez de forzarlo en silencio:** 70.453 caracteres sigue por encima del
+rango 30-40k pedido originalmente, porque "Estado del código" (43.253
+caracteres) y "Decisiones de arquitectura" (14.620 caracteres) no
+formaban parte del encargo (solo "Hallazgos verificados") y por sí
+solas ya superan ese rango. Preguntado explícitamente si aplicar el
+mismo tratamiento a esas dos secciones -- **el usuario eligió dejarlo en
+70.453**, sin tocarlas más.
+
+**Verificado al cierre de esta entrada (turno posterior, a petición
+directa del usuario):** `CLAUDE.md` (70.453 caracteres) está muy por
+debajo del límite real de 150k de Claude Code -- confirmado con `wc -c`
+tras la reestructuración, no solo asumido por la aritmética de la resta.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Si `CLAUDE.md` vuelve a crecer con nuevas sesiones (como ya pasó una
+  vez), la misma técnica (mover detalle evidencial a
+  `docs/DECISIONES_VERIFICADAS.md`, dejar resumen + puntero) es el
+  patrón a repetir -- no reinventar el enfoque.
+- "Estado del código" y "Decisiones de arquitectura" siguen sin el
+  mismo tratamiento -- decisión explícita de dejarlos así, no un
+  descuido.
+
+## 2026-08-18 (continuación 14) — Test de regresión para el truncamiento del Nodo 4
+
+**Contexto:** pendiente señalado en la entrada de continuación 12 --
+`generate_answer_node` seguía sin ningún test automatizado, toda su
+verificación había sido manual (llamadas reales sueltas). Se pidió
+cerrar ese hueco con un mock de `LLMClient`, sin gastar tokens reales.
+
+**Implementado en `tests/test_nodes.py`:**
+- `_StubLLMClient` (implementa `LLMClient.complete()`): devuelve una
+  secuencia FIJA de `LLMResponse` pasada en el constructor, registra
+  `max_tokens` de cada llamada, y lanza `AssertionError` si se le llama
+  más veces de las que tiene respuestas preparadas -- esto último para
+  que un test pueda afirmar "como mucho 2 llamadas" (nunca en bucle)
+  simplemente dejándole solo 2 respuestas, sin un contador aparte.
+- Tres tests nuevos, sección "Nodo 4 -- generate_answer_node":
+  1. `test_generate_answer_node_retries_once_on_truncation_and_succeeds`
+     -- primera respuesta `finish_reason='length'`, segunda `'stop'`.
+     Verifica: la respuesta final es la del reintento (completa, sin la
+     nota de truncamiento), 2 llamadas, la primera con
+     `NODE_4_MAX_TOKENS` y la segunda con `NODE_4_RETRY_MAX_TOKENS`.
+  2. `test_generate_answer_node_appends_notice_if_retry_also_truncates`
+     -- ambas respuestas `'length'` (mismo síntoma que el caso real de
+     Shellac que motivó el fix). Verifica: la nota
+     `"[respuesta incompleta por límite de longitud]"` se añade al
+     final, exactamente 2 llamadas (el stub lanzaría en una tercera,
+     confirmando que el reintento es UNA vez, no un bucle).
+  3. `test_generate_answer_node_no_retry_when_first_response_is_not_truncated`
+     -- camino normal (`'stop'` a la primera). Verifica 1 sola llamada,
+     sin nota añadida -- confirma que el fix no añade un reintento
+     innecesario al caso común.
+- `store=None` en `NodeDependencies` para los tres tests -- verificado
+  leyendo `generate_answer_node` que no toca `deps.store` en ningún
+  punto, así que no hace falta el xlsx real ni el fixture `store` (a
+  diferencia de los tests de `_format_structured_result`/Nodo 2/Nodo 1
+  ya existentes en este archivo, que sí lo requieren).
+
+**Verificado:** los 3 tests nuevos pasan
+(`pytest tests/test_nodes.py -v`, 9 passed + 2 skipped -- los 2
+skipped son los de Nodo 1 que ya se saltaban antes por falta de
+`DEEPSEEK_API_KEY`, sin relación con este cambio). Suite completa:
+**24 passed, 2 skipped** (~91 s) -- ninguna regresión en los tests
+existentes.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Recálculo de coste/consulta con `max_tokens=2000`/845 tokens de
+  salida reales: NO se pudo completar -- ver la entrada siguiente,
+  bloqueado por falta de la tarifa $/token real, que no está
+  documentada en ningún sitio del repo pese a la instrucción de
+  usarla "tal como está documentada en CLAUDE.md".
+- Detección de ambigüedad en el Nodo 3, servidor MCP, deploy, mejora de
+  retrieval del Nodo 2: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 15) — Recálculo real de coste/consulta, con la tarifa oficial de DeepSeek verificada
+
+**Contexto:** la entrada anterior quedó bloqueada -- se pidió recalcular
+el coste/consulta con `max_tokens=2000`/845 tokens de salida reales
+"usando la tarifa de DeepSeek ya documentada en CLAUDE.md (16-ago,
+punta/valle)", pero al buscarla, **CLAUDE.md solo documenta el
+RESULTADO anterior ($0,0005-0,0014/consulta), nunca la tarifa $/token
+subyacente** -- verificado con `grep` sobre `CLAUDE.md`,
+`docs/DECISIONES_VERIFICADAS.md` y `PROGRESS.md`, cero coincidencias de
+ninguna cifra de precio por millón de tokens. La cifra vigente hasta
+ahora la había aportado el usuario contra una fuente externa en una
+sesión anterior sin dejar la tarifa en sí registrada en el repo.
+
+**Decisión: no fabricar una tarifa de memoria** -- inventar un número
+de precio plausible violaría la misma disciplina que ya rige el resto
+del proyecto ("verifica contra datos reales, no asumas el esquema", ver
+CLAUDE.md "Cómo trabajar en este repo"). En vez de bloquear la tarea o
+pedirle al usuario que repita un dato que ya dio una vez, se verificó la
+tarifa oficial ACTUAL directamente:
+- `WebFetch` contra `https://api-docs.deepseek.com/quick_start/pricing`
+  (la documentación oficial de precios de DeepSeek, no un agregador de
+  terceros) -- confirma modelo `deepseek-v4-flash` (el que usa este
+  proyecto, `DeepSeekClient`): input cache-hit $0,007 (valle) / $0,014
+  (punta) por millón de tokens; input cache-miss $0,22 / $0,44; output
+  $0,66 / $1,32. "Punta" = 01:00-04:00 y 06:00-10:00 UTC, "valle" el
+  resto, tarifa valle = mitad de la de punta -- confirmado en la propia
+  página, coincide con la mecánica "punta/valle" ya mencionada en
+  CLAUDE.md (aunque sin la cifra concreta hasta ahora). Contrastado
+  además con un `WebSearch` previo (varios agregadores de terceros
+  coinciden con la misma tabla) antes de confiar en un solo fetch.
+
+**Cálculo, con datos ya medidos en sesiones anteriores (sin cambios en
+esos números, solo se combinan con la tarifa nueva):**
+- Input: ~1.250-2.000 tokens (system prompt 575 tokens medido +
+  `retrieved_chunks`, k=3-5 chunks × ~150-180 tokens/chunk -- mismo
+  presupuesto de contexto medido en la sesión de "Presupuesto de
+  contexto del Nodo 4", sin cambios).
+- Output: **845 tokens (medido de verdad, caso real Shellac,
+  `finish_reason == 'stop'`)** -- no una estimación, el mismo dato ya
+  registrado en la entrada de continuación 12.
+- Input tratado como cache-miss (cota conservadora -- el system prompt
+  SÍ podría beneficiarse del caché automático de DeepSeek en producción
+  al repetirse entre consultas, pero el efecto sobre el total es
+  pequeño: el output domina el coste porque su tarifa es ~3x la de
+  input cache-miss).
+- **Resultado: ~$0,0008/consulta en valle, ~$0,0020/consulta en
+  punta** -- rango ~1,4-1,6x mayor que la cifra anterior
+  ($0,0005-0,0014), consistente con que el output real más que se
+  dobló (365→845) mientras el input no cambió.
+
+**Hallazgo no buscado, verificado antes de darlo por bueno:** el valor
+hardcoded `ESTIMATED_COST_PER_QUERY_USD = 0.002` en `ui/app.py` (el que
+usa el candado de presupuesto real, `DAILY_HARD_COST_CEILING_USD =
+0.35`) **sigue siendo válido** -- cae justo en el extremo superior
+(punta) del rango recalculado, así que el candado sigue protegiendo con
+el margen esperado en el caso normal, sin necesidad de tocar código.
+**Caveat real señalado, no corregido (fuera de alcance de esta
+sesión):** ese hardcoded es un valor fijo por consulta y no distingue
+una consulta normal de una que dispara el reintento por truncamiento
+(`NODE_4_RETRY_MAX_TOKENS = 3500`) -- el caso peor de reintento paga DOS
+llamadas completas (hasta ~5.500 tokens de salida entre ambas),
+~$0,004-0,009/consulta, 2-4,5x el hardcoded. No detectado como problema
+real hoy (el reintento solo se paga en el caso raro), solo documentado
+para no asumir que el candado cubre ese caso con el mismo margen que el
+normal.
+
+**Actualizado:**
+- `CLAUDE.md`, "Decisiones de arquitectura ya tomadas" -- bloque
+  "Precio LLM de referencia" reescrito con la tarifa citada, el cálculo,
+  el hallazgo del hardcoded de `ui/app.py`, y el caveat del caso de
+  reintento. Ya no queda marcado como "NO CERRADA".
+- `docs/efsa-rag-proyecto.html` -- las cifras de ~$0,0006/consulta y
+  ~500 tokens de salida (estimaciones previas a tener datos reales)
+  corregidas a las cifras medidas/recalculadas (~$0,0008-0,0020,
+  845 tokens de salida, ~5.000-13.000 consultas/mes con el mismo
+  presupuesto de 6-7€/mes).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El caveat del caso de reintento (hardcoded no distingue coste
+  normal de coste de reintento) queda solo documentado, no resuelto --
+  no parece necesario mientras las respuestas truncadas sigan siendo
+  raras, pero si `finish_reason == 'length'` empieza a verse con
+  frecuencia real (no solo en el caso de prueba de Shellac), revisar si
+  `ESTIMATED_COST_PER_QUERY_USD` necesita reflejar ese caso.
+- Detección de ambigüedad en el Nodo 3, servidor MCP, deploy, mejora de
+  retrieval del Nodo 2: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 16) — Servidor MCP implementado: search_efsa_opinion + get_reevaluation_status
+
+**Contexto:** siguiente pendiente en orden (#7 de CLAUDE.md). Se pidió
+implementar las dos herramientas del diseño original
+(`docs/efsa-rag-proyecto.html`, paso 6 del roadmap) como wrappers finos
+sobre `answer_question()`/el grafo compilado, sin reimplementar lógica,
+y **mostrar el esquema de las dos herramientas para revisión antes de
+escribir el servidor** -- no se escribió una línea de código del
+servidor hasta tener el visto bueno.
+
+**Esquema propuesto y revisado con el usuario antes de implementar:**
+ambas con un único parámetro `substance: str` (nombre en lenguaje
+natural, inglés o español, o E-number). `search_efsa_opinion` ->
+respuesta narrativa fundamentada (wrapper de `answer_question`).
+`get_reevaluation_status` -> estado estructurado (ADI/TDI, fecha, DOI,
+sin prosa).
+
+**Trade-off señalado ANTES de implementar, no descubierto después:**
+tal como se diseñó al principio, ambas herramientas invocarían
+`answer_question()` sin más -- lo que significa que
+`get_reevaluation_status` pagaría la llamada cara al Nodo 4 (generación
+LLM) aunque solo necesite los campos ya calculados por el Nodo 3, sin
+LLM. Se preguntó explícitamente al usuario cómo resolverlo.
+
+**Decisión del usuario: implementar un camino parcial del grafo (Nodo
+1 + Nodo 3, sin Nodo 2 ni Nodo 4), condicionado a confirmar primero que
+saltarse el Nodo 4 no compromete la restricción no negociable #1**
+(comunicación de riesgo del ADI). Confirmación dada ANTES de escribir
+el código, citando la fuente exacta:
+`adi_justification = adi_row[ADI_JUSTIFICATION_COLUMN]`
+(`ingestion/openfoodtox.py:745`) -- asignación directa desde la celda
+del xlsx, sin ningún paso de LLM. La restricción #1 prohíbe que el LLM
+**redacte** una frase que enmarque el ADI como umbral -- vive en el
+system prompt del Nodo 4 porque solo ahí se compone prosa nueva. El
+camino parcial nunca invoca un LLM para el ADI: números crudos +
+cita textual de EFSA, el mismo campo que el Nodo 4 ya cita hoy dentro
+de sus respuestas generadas.
+
+**Implementado:**
+- `graph/build.py`: `ReevaluationStatus` (dataclass) +
+  `resolve_current_opinion(query) -> ReevaluationStatus` -- llama a
+  `extract_entity_node`/`verify_currency_node` directamente (NO al
+  grafo compilado, que siempre enruta al Nodo 4), reutilizando el mismo
+  `_default_deps` cacheado que `answer_question`. Mismo guardia de
+  `substance_uuid` ya usado en `_route_after_retrieval`, no una regla
+  nueva.
+- `AnswerResult` gana el campo `substance_name` (ya lo calculaba el
+  Nodo 1, solo no se exponía) -- necesario para que
+  `search_efsa_opinion` sepa qué sustancia se identificó sin releer
+  `structured_result.title` (puede ser `None` aunque la sustancia SÍ se
+  identificara -- señales distintas). Verificado con `grep` que
+  `AnswerResult` solo se construye en un sitio (`answer_question`), sin
+  otros callers que pudiera romper.
+- `mcp/server.py` (nuevo): `MCPServer` (librería `mcp` -- versión real
+  instalada 2.0.0, API `mcp.server.mcpserver.MCPServer`, DISTINTA de
+  `mcp.server.fastmcp.FastMCP` de la 1.x que el pin `mcp>=1.0` de
+  `requirements.txt` permitía instalar por error -- corregido a
+  `mcp>=2.0`). Dos herramientas registradas con `@server.tool()`,
+  parámetro `substance` vía `Annotated[str, Field(description=...)]`
+  (verificado que genera el `inputSchema` JSON exacto ya revisado con
+  el usuario). `get_reevaluation_status` añade `safety_note` -- una
+  constante fija, NO generada por LLM, recordando que el ADI es margen
+  de seguridad y no umbral -- defensa en profundidad para un cliente
+  MCP externo que reciba estos números sin el contexto que el Nodo 4 sí
+  da en sus respuestas narrativas.
+- Ambas herramientas tipadas como `dict[str, Any]` (no `dict` a secas)
+  -- **verificado explícitamente que esto es necesario** para que el
+  SDK genere `outputSchema`/`structured_content`, probado con un caso
+  mínimo antes de aplicarlo a las dos herramientas reales.
+
+**Verificado (sin gastar tokens reales, con stubs de
+`answer_question`/`resolve_current_opinion`):**
+- `server.list_tools()` -- `inputSchema`/`outputSchema` de las dos
+  herramientas coinciden exactamente con lo revisado con el usuario.
+- `server.call_tool('get_reevaluation_status', ...)` con un
+  `ReevaluationStatus` de aspartamo simulado -- `structured_content`
+  correcto, todos los campos poblados.
+- `server.call_tool('get_reevaluation_status', ...)` con sustancia NO
+  identificada (`ReevaluationStatus` con todo en `None`) -- confirma
+  que degrada con gracia: `substance_identified: null`,
+  `dossier_found: false`, resto de campos `null`, `safety_note`
+  presente igualmente -- nunca inventa un valor.
+- `server.call_tool('search_efsa_opinion', ...)` con un `AnswerResult`
+  simulado -- `structured_content` correcto (`substance_identified`,
+  `answer`, `dossier_title`, `doi`, `retrieved_chunks_count`).
+- Suite de tests completa tras los cambios en `graph/build.py`: **24
+  passed, 2 skipped**, sin regresiones.
+
+**Actualizado:** `CLAUDE.md` -- nueva entrada en "Decisiones de
+arquitectura ya tomadas" ("Dos caminos de ejecución del grafo") con el
+razonamiento completo de seguridad; `mcp/server.py` añadido a
+"Implementado"; pendiente #7 marcado HECHO; `requirements.txt`
+corregido (`mcp>=1.0` -> `mcp>=2.0`).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **Sin test automatizado en `tests/`** -- toda la verificación de esta
+  sesión fue manual (con stubs, en la consola), mismo punto de partida
+  que tuvo el Nodo 4 antes de que se le añadiera
+  `test_generate_answer_node_*`. Candidato natural para una sesión
+  futura si el servidor MCP se toca de nuevo.
+- **Sin probar con un cliente MCP real** (Claude Desktop u otro) --
+  solo `server.list_tools()`/`server.call_tool()` invocados
+  directamente en Python. El transporte stdio (`server.run()` en
+  `if __name__ == "__main__"`) no se ha ejercitado de verdad.
+- `search_efsa_opinion` sigue pagando la llamada completa al Nodo 4
+  (esperado, es su propósito -- respuesta narrativa) -- el ahorro de
+  coste solo aplica a `get_reevaluation_status`.
+- Detección de ambigüedad en el Nodo 3, deploy, mejora de retrieval del
+  Nodo 2: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 17) — Test automatizado para el servidor MCP
+
+**Contexto:** pendiente señalado al cierre de la entrada anterior --
+`mcp/server.py` solo tenía verificación manual con stubs, sin nada en
+`tests/`. Se pidió cerrarlo con el mismo patrón de stubs que
+`test_nodes.py` usa para el truncamiento del Nodo 4 (`_StubLLMClient`),
+sin gastar tokens reales, cubriendo como mínimo: esquema de
+`list_tools()`, `get_reevaluation_status` con sustancia conocida sin
+pasar por el Nodo 4, y degradación con gracia con sustancia no
+identificada en ambas herramientas.
+
+**Implementado -- `tests/test_mcp_server.py`, 6 tests:**
+1. `test_list_tools_exposes_exactly_the_two_expected_tools_with_schema`
+   -- nombres exactos, `inputSchema` (`substance: string`, único
+   requerido), `outputSchema` presente en ambas.
+2. `test_get_reevaluation_status_known_substance_returns_structured_json_without_node4`
+   -- aspartamo (tier 1, con ADI) vía stub de `resolve_current_opinion`;
+   `answer_question` dejado como `_exploding` (lanza `AssertionError`
+   si se le llama) -- confirma en positivo, no por casualidad, que
+   `get_reevaluation_status` nunca invoca el camino del Nodo 4.
+3. `test_get_reevaluation_status_tier2_without_adi_reports_null_adi_not_invented`
+   -- caso TiO2 (dictamen vigente, sin ADI numérico): `adi_value`/
+   `adi_unit`/`adi_justification` deben ir `None`, nunca un valor
+   inventado; `discussion_available` en `False` por boilerplate.
+4. `test_search_efsa_opinion_known_substance_returns_narrative_answer`
+   -- stub de `answer_question` con `AnswerResult` completo;
+   `resolve_current_opinion` dejado como `_exploding` (simétrico al
+   punto 2, confirma que search_efsa_opinion tampoco llama al camino
+   parcial).
+5. `test_get_reevaluation_status_unidentified_substance_degrades_gracefully`
+   -- `ReevaluationStatus` con todo en `None` -- todos los campos de
+   datos `None`/`False` explícitos, `safety_note` presente igualmente.
+6. `test_search_efsa_opinion_unidentified_substance_degrades_gracefully`
+   -- mismo caso para el camino completo.
+
+**Detalles de implementación:**
+- Sin `pytest-asyncio` en el proyecto (no está en `requirements.txt`)
+  -- `list_tools()`/`call_tool()` son async, se invocan con
+  `asyncio.run(...)` dentro de tests síncronos normales en vez de
+  añadir una dependencia nueva solo para esto.
+- `monkeypatch.setattr(mcp_server, "answer_question", ...)` /
+  `"resolve_current_opinion"` -- parchea los nombres en el namespace
+  del MÓDULO `efsa_rag.mcp.server` (donde las herramientas los buscan
+  en tiempo de llamada), no en `efsa_rag.graph.build` -- mismo patrón
+  verificado manualmente en la sesión anterior antes de escribir el
+  test.
+- `_exploding(*_args, **_kwargs)` reutilizable, mismo espíritu que
+  `_ExplodingVectorStore` de `test_hybrid_retrieval_node_no_uuid_skips_chroma_entirely`
+  en `test_nodes.py` -- afirmar en positivo que una ruta NO se toma, no
+  solo que el resultado final sea el esperado.
+
+**Verificado:** los 6 tests nuevos pasan en 1,36 s (sin red, sin xlsx,
+sin Chroma). Suite completa: **30 passed, 2 skipped** (los 2 de
+siempre, por falta de `DEEPSEEK_API_KEY`) -- sin regresiones.
+
+**Actualizado:** `CLAUDE.md` -- el caveat "sin test automatizado" de la
+entrada de `mcp/server.py` en "Implementado" sustituido por el detalle
+de los 6 tests; pendiente #7 actualizado (ya no falta el test, solo
+queda probar con un cliente MCP real).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Sigue sin probarse con un cliente MCP real (Claude Desktop u otro) --
+  solo `list_tools()`/`call_tool()` invocados directamente en Python,
+  ahora también en los tests, pero nunca a través del transporte stdio
+  real (`server.run()`).
+- Detección de ambigüedad en el Nodo 3, deploy, mejora de retrieval del
+  Nodo 2: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 18) — Medición real de memoria: 1.870 MB, bloquea el deploy en el tier gratuito
+
+**Contexto:** antes de intentar el deploy (pendiente #8), se pidió
+medir el consumo de memoria REAL de la app completa en local -- Chroma
+con los 67.827 chunks, el modelo de embeddings cargado, y el proceso de
+Streamlit corriendo con una consulta real ya resuelta -- y avisar
+explícitamente si se acercaba peligrosamente a 1 GB.
+
+**Bloqueo encontrado antes de poder medir nada:** `ui/app.py` no
+llamaba todavía a `answer_question()` (era un `TODO` literal) -- no
+había forma de que una consulta real pasara por el proceso de
+Streamlit. Preguntado al usuario cómo proceder; eligió conectar la UI
+de forma permanente, manteniendo el candado de refresco y los límites
+de consulta exactamente como estaban, aplicándose ANTES de la llamada
+real.
+
+**Implementado -- `ui/app.py`:** `_render_answer(query)` (import
+perezoso de `graph.build.answer_question`, con `try/except` para no
+tirar la sesión de Streamlit si la API falla) llamada SOLO si
+`check_and_register_query()` devuelve `permitido=True` -- confirmado
+explícitamente al usuario, releyendo `main()` línea a línea, que el
+grafo nunca se invoca si el límite está agotado.
+
+**Bug real encontrado y arreglado en el camino (no buscado, surgido al
+intentar medir con `AppTest`):** `_get_client_ip()` podía devolver un
+valor no-`str` (bajo el harness de test de Streamlit, probablemente
+porque `session_info.request` no es una request HTTP real ahí), que
+rompía `check_and_register_query()` -- `TypeError: keys must be str...
+not MagicMock` al serializar el log de uso a JSON. El docstring ya
+prometía degradar a `"unknown"` ante cualquier fallo; el `try/except`
+capturaba excepciones pero no validaba el TIPO del valor devuelto en
+el camino feliz. Arreglado con una comprobación de tipo explícita.
+
+**Medición -- dos intentos, el primero falló, documentado igualmente
+porque el diagnóstico en sí es información útil:**
+1. `streamlit.testing.v1.AppTest` (sin necesitar navegador/Playwright,
+   no instalados) -- cargó Streamlit, renderizó la app, cargó el
+   modelo de embeddings, y se COLGÓ más allá de 180s. Diagnosticado
+   antes de abandonar: red aislada a la API (2,4s, no es el problema),
+   llamada directa completa a `answer_question()` fuera de `AppTest`
+   (39s, funciona bien) -- apunta a que algo en `torch`/
+   `sentence-transformers`/`chromadb` se comporta distinto fuera del
+   hilo principal (`AppTest` ejecuta el script en un hilo dedicado),
+   no investigado hasta la causa raíz exacta.
+2. **Método final -- descomposición en dos medidas reales:** (a)
+   `streamlit run` REAL como subproceso, sin consulta -- **63,2 MB**
+   (coste base de Streamlit cargado). (b) proceso Python que importa
+   `streamlit` + ejecuta el mismo camino que `_render_answer`
+   (`build_default_deps()` + `build_graph()` + UNA consulta real de
+   extremo a extremo, la pregunta de referencia de aspartamo) --
+   **1.023,0 MB tras cargar Chroma+embeddings+xlsx+cliente LLM, 1.870,4
+   MB tras la consulta real.** El paso [2] de `AppTest` (54,1 MB, app
+   cargada sin consulta) fue consistente con la medida (a) del
+   `streamlit run` real (63,2 MB) -- confirma que `AppTest` daba
+   cifras fiables hasta donde llegó a funcionar, el problema era solo
+   el cuelgue posterior.
+
+**Desglose fino (sin gastar tokens, aparte, dos tablas):**
+- `torch` (+455,7 MB) y `sentence_transformers` (+303,9 MB) solo en
+  IMPORTS, antes de cargar ningún modelo -- el mayor contribuyente
+  estructural, no depende de decisiones de este proyecto.
+- Primera inferencia real de PyTorch (`model.encode()` de una query
+  corta): **+410 MB** -- el salto más grande de toda la tabla, coste
+  fijo de "warm-up" de PyTorch, no proporcional al tamaño del corpus
+  ni al número de resultados pedidos.
+- `collection.query()` de Chroma en sí (con o sin filtro `where`): ~2
+  MB -- barato una vez todo está cargado.
+- `OpenFoodToxStore` carga las hojas del xlsx de forma PEREZOSA, no al
+  construirse -- la primera llamada real a
+  `current_reference_value_opinion()` dispara ~193 MB de carga, dentro
+  del Nodo 3, durante la consulta -- explica gran parte del salto de
+  +847 MB medido en la consulta real de extremo a extremo (el resto,
+  ~170-200 MB, no aislado con la misma precisión).
+
+**Verificado con fuentes externas, no asumido:** Streamlit Community
+Cloud, tier gratuito, límite de 1 GB de RAM por app (`WebSearch`,
+varias fuentes independientes coincidentes).
+
+**Conclusión, comunicada explícitamente tal como se pidió: 1.870 MB
+medidos es ~87% por encima del límite de 1 GB -- no es un margen
+ajustado, es un bloqueo real. El deploy en el tier gratuito tal como
+está el sistema hoy fallaría por OOM.**
+
+**Actualizado:** `CLAUDE.md` -- pendiente #8 marcado BLOQUEADO con el
+resumen; nuevo hallazgo en "Hallazgos verificados" con puntero al
+detalle completo en `docs/DECISIONES_VERIFICADAS.md`; entrada de
+`ui/app.py` en "Implementado" actualizada (conectada al grafo + bug de
+`_get_client_ip` arreglado).
+
+**Limpieza:** proceso `streamlit run` de la medición matado al
+terminar; `data/usage_log.json` (contaminado con 1 registro de prueba
+de la sesión de `AppTest`) borrado -- se regenera limpio con
+`_load_usage()` en el próximo uso real.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **Ninguna mitigación decidida ni implementada** para el problema de
+  memoria -- candidatos sin evaluar: modelo de embeddings más ligero,
+  evitar cargar `torch` completo (ej. `onnxruntime`), carga más
+  selectiva de las hojas de OpenFoodTox, o subir de tier de hosting.
+  Señalado al usuario para que decida antes de intentar el deploy.
+- Causa raíz exacta del cuelgue de `AppTest` fuera del hilo principal:
+  no investigada a fondo (había una alternativa más simple disponible).
+- Suite de tests completa verificada sin regresiones tras los cambios
+  de `ui/app.py` (30 passed, 2 skipped) -- sin test nuevo para
+  `_render_answer`/`_get_client_ip` en `tests/` todavía (mismo patrón
+  de hueco que otros nodos antes de que se les añadiera el suyo).
+- Detección de ambigüedad en el Nodo 3, servidor MCP (transporte stdio
+  real), mejora de retrieval del Nodo 2: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 19) — Backend de embeddings cambiado a ONNX int8; índice de Chroma reconstruido; pivote de plan de deploy a HF Spaces
+
+**Contexto:** tras el bloqueo de memoria de la continuación 18
+(1.870 MB, ~87% sobre el límite de 1 GB de Streamlit Community Cloud),
+varios turnos de investigación e implementación real, resumidos aquí
+en una sola entrada:
+
+**1. Cambio de plan de deploy (decisión del usuario, sin código):** en
+vez de Streamlit Community Cloud, HF Spaces (CPU Basic, 16 GB RAM --
+cubre los 1.870 MB con margen amplio, sin necesitar optimizar memoria
+por sí solo). Se investigó el mecanismo real de deploy (README.md YAML,
+Dockerfile, secrets, empaquetado de Chroma vía git-lfs o Dataset repo)
+-- **hallazgo crítico: el SDK nativo `streamlit` está deprecado desde
+30-abr-2025 (hay que usar `sdk: docker`), y el SDK `docker` en CPU
+Basic dejó de ser gratuito en cuentas free hacia el 8-24 jul-2026 (sin
+anuncio oficial, confirmado por múltiples hilos del foro de HF, afecta
+también a cuentas ya existentes)** -- requeriría HF PRO, $9/mes. Se
+pidió verificar esto creando una cuenta y probando el flujo de
+creación de un Space -- **no se pudo completar**: no hay herramienta de
+navegador conectada en esta sesión, y crear una cuenta requiere
+verificación por email que no se puede hacer por el usuario. Quedó
+pendiente de que el usuario lo verifique él mismo (pasos exactos dados
+en el turno correspondiente).
+
+**2. Investigación ONNX Runtime como backend alternativo a `torch`,
+pedida explícitamente antes de comprometerse a tocar el pipeline:**
+- Confirmado: `all-MiniLM-L6-v2` tiene 9 variantes ONNX publicadas en
+  su repo oficial, de fp32 (90,4 MB) a int8 cuantizado (~23 MB).
+- **Hallazgo central, verificado de la forma más directa posible
+  (desinstalando `torch` del venv):** `sentence-transformers` (5.7.0)
+  **no se puede ni importar sin `torch` instalado**, aunque se elija
+  `backend="onnx"` -- revienta en
+  `sentence_transformers/util/distributed.py` (`import
+  torch.distributed as dist`, incondicional), antes de que el código
+  llegue a elegir backend. `torch` reinstalado inmediatamente después
+  para no dejar el venv roto.
+- Medido en 3 procesos aislados (streamlit + sentence-transformers +
+  una consulta, sin Chroma): torch (CUDA) 1.363,7 MB; onnx fp32
+  1.019,7 MB (-25%); **onnx int8 924,7 MB (-32%)**. El ahorro no viene
+  de evitar `torch` (sigue importado en los 3 casos) sino de evitar el
+  "calentamiento" de la primera inferencia de PyTorch (~400 MB) --
+  ONNX Runtime hace la inferencia real.
+
+**3. Combinación torch CPU-only + ONNX int8, medida sobre el pipeline
+COMPLETO (Streamlit + Chroma 67.827 chunks + una consulta real de
+extremo a extremo), no solo aislada:**
+- `torch` CPU-only instalado (`--index-url .../whl/cpu`) -- build
+  191,8 MB descargado, frente al build CUDA bastante más pesado.
+  `import torch` solo: 252 MB (CPU) vs ~456 MB (CUDA) en el
+  experimento aislado anterior.
+- Resultado del pipeline completo: **1.213,6 MB -- 189,6 MB (18%) por
+  encima del límite de 1 GB.** Reducción real del 35% frente a los
+  1.870,4 MB originales (torch CUDA + backend torch), pero no
+  suficiente por sí sola para bajar de 1 GB.
+- `torch` restaurado al build CUDA original al terminar (para no
+  degradar silenciosamente el entorno de desarrollo local, que se
+  beneficia de GPU para reindexados).
+- Aviso técnico señalado en su momento: el índice de Chroma se había
+  construido con el modelo fp32/torch original -- consultar con
+  int8/onnx introducía un desajuste fp32/int8 entre chunks indexados y
+  queries, no validado sistemáticamente más allá de una consulta de
+  humo.
+
+**4. Esta sesión -- IMPLEMENTADO de verdad, no solo medido:** se pidió
+reconstruir el índice completo con el MISMO modelo ONNX int8 con el
+que se consulta en producción, para eliminar el desajuste fp32/int8, y
+verificar con la consulta de aspartamo tras la reconstrucción.
+
+- **Nuevo módulo `ingestion/embedding_model.py`** -- único punto de la
+  base de código que instancia `SentenceTransformer`, para que
+  indexado y retrieval no puedan desincronizarse por editar una copia
+  y olvidar la otra: `EMBEDDING_MODEL_REPO_ID =
+  "sentence-transformers/all-MiniLM-L6-v2"`,
+  `EMBEDDING_ONNX_FILE = "onnx/model_qint8_avx512_vnni.onnx"`,
+  `load_embedding_model()`.
+- **Actualizados los 3 sitios que antes instanciaban el modelo por
+  separado** (verificado con `grep` que no quedó ninguno suelto):
+  `scripts/build_chroma_index.py` (los 3 modos: `--test-batch`,
+  `--all`, `--verify`), `graph/build.py::build_default_deps`, y el
+  fixture `chroma_deps` de `tests/test_nodes.py`.
+- **`requirements.txt`**: `sentence-transformers>=3.0` ->
+  `sentence-transformers[onnx]>=3.0` (añade `optimum` + `onnxruntime`
+  -- este último ya era dependencia transitiva de `chromadb`, no es
+  100% peso nuevo).
+- **Validado con `--test-batch` primero** (300 chunks, colección
+  efímera, no toca `data/chroma/`) antes de comprometerse al
+  reindexado completo -- resultados semánticamente correctos.
+- **Reindexado completo ejecutado (`--all`, en segundo plano, ~22,4
+  min reales -- más lento que los ~3 min con GPU+torch de la sesión
+  original, esperado y aceptado por ser un paso offline):
+  67.827/67.827 chunks escritos, verificado.** 3 consultas de
+  verificación (genotoxicidad, TiO2, incertidumbre de exposición)
+  temáticamente correctas, mismo patrón de calidad que con el índice
+  anterior.
+- **Verificación pedida explícitamente -- consulta de aspartamo
+  end-to-end (`answer_question`, grafo completo, con el índice YA
+  reconstruido):** ADI = 40 mg/kg bw/día (correcto), DOI correcto
+  (10.2903/j.efsa.2013.3496), 5 chunks recuperados, todos "Aspartame"
+  tier 1, respuesta coherente y con las reglas de comunicación de
+  riesgo respetadas (margen de seguridad explicado correctamente, sin
+  la frase prohibida). Pegada íntegra en el turno correspondiente.
+- Suite de tests completa: **32 passed** (esta vez sin skips --
+  `DEEPSEEK_API_KEY` estaba exportada en la sesión de shell, así que
+  los tests del Nodo 1 también corrieron de verdad).
+
+**Efecto secundario no buscado, anotado sin investigar más:** el
+tamaño en disco de `data/chroma/` subió de 597 MB a **718 MB** (+20%)
+tras la reconstrucción -- las embeddings de salida siguen siendo
+float32 de 384 dims igual que antes (la cuantización int8 es interna
+al modelo ONNX, no cambia el formato de lo que se almacena), así que
+el aumento no se explica por eso; no se ha investigado la causa exacta
+(¿fragmentación de SQLite al recrear la colección? ¿metadata
+distinta?) -- no bloqueante, el disco no era la restricción que se
+estaba optimizando.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El usuario todavía no ha confirmado si HF Spaces Docker en CPU Basic
+  es viable en su cuenta (paso manual pendiente, ver punto 1).
+- Con esta combinación (torch CPU-only + ONNX int8) el pipeline sigue
+  ~190 MB por encima de 1 GB -- si en algún momento se retoma
+  Streamlit Community Cloud como alternativa, hace falta una palanca
+  más (candidatos no explorados: carga más selectiva de las hojas de
+  OpenFoodTox en el Nodo 3, revisar si `langchain`/`langgraph` aportan
+  peso evitable, seguir sin `torch` sería ideal pero no es viable con
+  `sentence-transformers` tal como está).
+- El torch CPU-only usado en la medición de la continuación anterior
+  NO se ha dejado instalado -- el venv de desarrollo local sigue con
+  el build CUDA. Si el deploy final necesita CPU-only (para ahorrar
+  memoria en producción), hace falta decidir cómo se gestiona esa
+  diferencia entre entorno de desarrollo (GPU, útil para reindexados)
+  y entorno de producción (CPU-only, más ligero) -- probablemente vía
+  `requirements.txt` distinto o un extra opcional, no resuelto aquí.
+- Tamaño en disco de `data/chroma/` creció un 20% sin explicación
+  investigada (ver arriba).
+- Detección de ambigüedad en el Nodo 3, servidor MCP (transporte stdio
+  real), mejora de retrieval del Nodo 2, verificación manual de HF
+  Spaces: sin cambios/resolver esta sesión.

@@ -2,10 +2,13 @@
 Genera embeddings y puebla Chroma a partir de data/processed/chunks.jsonl
 (pendiente #5 de CLAUDE.md, paso final -- desbloquea el Nodo 2).
 
-Modelo: sentence-transformers/all-MiniLM-L6-v2 (384 dims, local, rápido)
--- ver CLAUDE.md, "Decisiones de arquitectura ya tomadas", para el
-razonamiento. Esquema de metadatos: ingestion/chroma_index.py (sin
-`e_number`, ver ese módulo y CLAUDE.md para el motivo).
+Modelo: sentence-transformers/all-MiniLM-L6-v2 (384 dims, local, rápido),
+backend ONNX + pesos int8 cuantizados (ver
+ingestion/embedding_model.py -- decisión de memoria para el deploy,
+sesión 18-ago-2026, corpus reindexado con este mismo backend para que
+no haya desajuste con las queries en producción). Esquema de
+metadatos: ingestion/chroma_index.py (sin `e_number`, ver ese módulo y
+CLAUDE.md para el motivo).
 
 Regla de CLAUDE.md sobre scripts en lote: este SÍ hace falta con
 --dry-run/límite explícito -- 67.827 chunks es un procesado real de
@@ -47,13 +50,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from efsa_rag.ingestion.chroma_index import rows_to_chroma_entries  # noqa: E402
+from efsa_rag.ingestion.embedding_model import EMBEDDING_DIMS, EMBEDDING_MODEL_REPO_ID, load_embedding_model  # noqa: E402
 
 CHUNKS_JSONL_PATH = Path(__file__).resolve().parent.parent / "data" / "processed" / "chunks.jsonl"
 CHROMA_PERSIST_DIR = Path(__file__).resolve().parent.parent / "data" / "chroma"
 COLLECTION_NAME = "efsa_reevaluation_chunks"
-
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-EMBEDDING_DIMS = 384
 
 # Lote de prueba: aspartamo (tier 1, sustancia única, dossier largo) +
 # tartratos (tier 1, 7 sustancias, dossier de grupo) -- ya procesados y
@@ -112,11 +113,9 @@ def run_test_batch() -> None:
     entries = rows_to_chroma_entries(rows)
     texts = [e.text for e in entries]
 
-    print(f"\nCargando modelo de embeddings: {EMBEDDING_MODEL_NAME} ...")
-    from sentence_transformers import SentenceTransformer
-
+    print(f"\nCargando modelo de embeddings: {EMBEDDING_MODEL_REPO_ID} (backend onnx, int8) ...")
     t0 = time.time()
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    model = load_embedding_model()
     load_time = time.time() - t0
     print(f"Modelo cargado en {load_time:.1f} s (device: {model.device})")
 
@@ -231,11 +230,9 @@ def run_full_index() -> None:
     entries = rows_to_chroma_entries(rows)
     texts = [e.text for e in entries]
 
-    print(f"\nCargando modelo de embeddings: {EMBEDDING_MODEL_NAME} ...")
-    from sentence_transformers import SentenceTransformer
-
+    print(f"\nCargando modelo de embeddings: {EMBEDDING_MODEL_REPO_ID} (backend onnx, int8) ...")
     t0 = time.time()
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    model = load_embedding_model()
     load_time = time.time() - t0
     print(f"Modelo cargado en {load_time:.1f} s (device: {model.device})")
 
@@ -298,7 +295,6 @@ def run_verify() -> None:
         print(f"No existe {CHROMA_PERSIST_DIR} -- corre primero --all.")
         return
     import chromadb
-    from sentence_transformers import SentenceTransformer
 
     client = chromadb.PersistentClient(path=str(CHROMA_PERSIST_DIR))
     try:
@@ -310,8 +306,8 @@ def run_verify() -> None:
     count = collection.count()
     print(f"Colección '{COLLECTION_NAME}' en {CHROMA_PERSIST_DIR}: {count} entradas.")
 
-    print(f"Cargando modelo de embeddings: {EMBEDDING_MODEL_NAME} ...")
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    print(f"Cargando modelo de embeddings: {EMBEDDING_MODEL_REPO_ID} (backend onnx, int8) ...")
+    model = load_embedding_model()
 
     for q in VERIFY_QUERIES:
         _print_query_result(collection, model, q)

@@ -62,13 +62,13 @@ from efsa_rag.graph.nodes import (
     hybrid_retrieval_node,
     verify_currency_node,
 )
+from efsa_rag.ingestion.embedding_model import load_embedding_model
 from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore, OpinionReference
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 XLSX_PATH = REPO_ROOT / "data" / "raw" / "OFT3_0_export_repository.xlsx"
 CHROMA_PERSIST_DIR = REPO_ROOT / "data" / "chroma"
 CHROMA_COLLECTION_NAME = "efsa_reevaluation_chunks"  # ver scripts/build_chroma_index.py
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 
 def _route_after_retrieval(state: GraphState) -> str:
@@ -116,16 +116,21 @@ def build_default_deps() -> NodeDependencies:
     del entorno, no se reinventa aquí).
 
     Carga recursos reales (modelo de embeddings, conexión a Chroma) --
-    no llamar por consulta, ver `answer_question` para el cacheo."""
+    no llamar por consulta, ver `answer_question` para el cacheo.
+
+    Modelo de embeddings vía `load_embedding_model()`
+    (`ingestion/embedding_model.py`) -- backend ONNX + int8, DEBE
+    coincidir con el que usó `scripts/build_chroma_index.py` para
+    poblar la colección, o las queries no viven en el mismo espacio
+    vectorial que los chunks indexados. Ver ese módulo para el porqué."""
     import chromadb
-    from sentence_transformers import SentenceTransformer
 
     store = OpenFoodToxStore(XLSX_PATH)
 
     chroma_client = chromadb.PersistentClient(path=str(CHROMA_PERSIST_DIR))
     vectorstore = chroma_client.get_collection(CHROMA_COLLECTION_NAME)
 
-    embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    embedding_model = load_embedding_model()
 
     llm_client = build_default_client()
 
@@ -159,14 +164,23 @@ class AnswerResult:
     solo devolvía el string).
 
     `answer` sigue siendo el texto final de cara al usuario -- esto NO
-    lo sustituye, lo acompaña. `retrieved_chunks` y `structured_result`
-    son exactamente los mismos objetos que vio el Nodo 4 al construir el
-    prompt (no una reconstrucción aparte) -- tomados directamente del
-    estado final del grafo tras `.invoke(...)`."""
+    lo sustituye, lo acompaña. `retrieved_chunks`, `structured_result` y
+    `substance_name` son exactamente los mismos valores que vio/produjo
+    el grafo (no una reconstrucción aparte) -- tomados directamente del
+    estado final tras `.invoke(...)`.
+
+    `substance_name` añadido (sesión 18-ago-2026, al implementar el
+    servidor MCP) -- ya lo calculaba el Nodo 1 y quedaba en el estado
+    del grafo, solo no se exponía aquí. Necesario para que un caller
+    (ej. la herramienta MCP `search_efsa_opinion`) sepa qué sustancia se
+    identificó sin tener que releer `structured_result.title` (que
+    puede ser `None` si no hay dictamen vigente, aunque la sustancia SÍ
+    se haya identificado -- son señales distintas, no intercambiables)."""
 
     answer: str
     retrieved_chunks: list[RetrievedChunk]
     structured_result: OpinionReference | None
+    substance_name: str | None
 
 
 def answer_question(query: str) -> AnswerResult:
@@ -195,6 +209,63 @@ def answer_question(query: str) -> AnswerResult:
         answer=result["answer"],
         retrieved_chunks=result.get("retrieved_chunks") or [],
         structured_result=result.get("structured_result"),
+        substance_name=result.get("substance_name"),
+    )
+
+
+@dataclass(frozen=True)
+class ReevaluationStatus:
+    """Salida de `resolve_current_opinion` -- el camino PARCIAL del
+    grafo (Nodo 1 + Nodo 3, sin Nodo 2 ni Nodo 4). Ver CLAUDE.md,
+    "Decisiones de arquitectura ya tomadas", para el porqué de este
+    segundo camino de ejecución y qué garantía de seguridad sostiene
+    (ninguno de estos campos pasa por un LLM: `substance_name` es
+    normalización determinista + resolución exacta contra `SUB`
+    -- salvo la propia llamada al LLM del Nodo 1 para identificar la
+    sustancia, que no compone nada sobre el ADI -- y `structured_result`
+    es lectura directa de OpenFoodTox, igual que en `AnswerResult`)."""
+
+    substance_name: str | None
+    substance_uuid: str | None
+    structured_result: OpinionReference | None
+
+
+def resolve_current_opinion(query: str) -> ReevaluationStatus:
+    """Camino PARCIAL del grafo: Nodo 1 (extracción de entidad) + Nodo 3
+    (verificación de vigencia determinista contra OpenFoodTox), sin
+    Nodo 2 (retrieval narrativo -- no hace falta, esta función no
+    necesita `retrieved_chunks`) ni Nodo 4 (generación LLM -- tampoco
+    hace falta, esta función no produce prosa, solo campos ya
+    calculados por OpenFoodTox).
+
+    NO usa el grafo compilado (`build_graph`/`_default_graph`) porque
+    ese grafo siempre enruta hacia el Nodo 4 -- se llaman los nodos 1 y
+    3 directamente, reutilizando su lógica tal cual (sin reimplementar
+    nada de `graph/nodes.py`), solo con una orquestación más corta.
+    Reutiliza el MISMO `_default_deps` cacheado que `answer_question`
+    -- compartido a nivel de módulo, así que llamar a esta función
+    primero (o después) no recarga el modelo de embeddings ni reabre
+    Chroma ni el xlsx.
+
+    Réplica exacta del guardia ya usado en `_route_after_retrieval`
+    para decidir si se llama al Nodo 3 (si el Nodo 1 no resolvió
+    `substance_uuid`, `verify_currency_node` lanzaría `ValueError` si
+    se le llamara) -- mismo criterio, no una regla nueva.
+    """
+    global _default_deps
+
+    if _default_deps is None:
+        _default_deps = build_default_deps()
+
+    state = extract_entity_node({"user_query": query}, _default_deps)
+    if not state.get("substance_uuid"):
+        return ReevaluationStatus(substance_name=None, substance_uuid=None, structured_result=None)
+
+    state = verify_currency_node(state, _default_deps)
+    return ReevaluationStatus(
+        substance_name=state.get("substance_name"),
+        substance_uuid=state.get("substance_uuid"),
+        structured_result=state.get("structured_result"),
     )
 
 

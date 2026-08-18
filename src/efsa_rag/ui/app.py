@@ -58,9 +58,13 @@ def _save_usage(data: dict) -> None:
 
 
 def _get_client_ip() -> str:
-    """Best-effort. API interna no estable -- si falla o cambia entre
-    versiones de Streamlit, degrada a 'unknown' y el sistema sigue
-    protegido por el límite global, que no depende de esto."""
+    """Best-effort. API interna no estable -- si falla, cambia entre
+    versiones de Streamlit, o devuelve algo que no es un string usable
+    (ej. bajo streamlit.testing.v1.AppTest, `session_info.request` no es
+    una request HTTP real -- encontrado midiendo memoria con AppTest en
+    sesión 18-ago-2026, `remote_ip` no era un `str`), degrada a
+    'unknown' -- el sistema sigue protegido por el límite global, que no
+    depende de esto."""
     try:
         from streamlit import runtime
         from streamlit.runtime.scriptrunner import get_script_run_ctx
@@ -69,7 +73,8 @@ def _get_client_ip() -> str:
         if ctx is None:
             return "unknown"
         session_info = runtime.get_instance().get_client(ctx.session_id)
-        return session_info.request.remote_ip if session_info else "unknown"
+        ip = session_info.request.remote_ip if session_info else None
+        return ip if isinstance(ip, str) and ip else "unknown"
     except Exception:
         return "unknown"
 
@@ -149,6 +154,30 @@ def render_disclaimer() -> None:
     )
 
 
+def _render_answer(query: str) -> None:
+    """Import perezoso -- `efsa_rag.graph.build` carga Chroma, el modelo
+    de embeddings y el cliente LLM (cacheados a nivel de módulo por
+    `answer_question`, ver graph/build.py). No se paga ese coste hasta
+    que se envía la primera consulta, no al arrancar la app."""
+    from efsa_rag.graph.build import answer_question
+
+    with st.spinner("Consultando el dictamen EFSA vigente..."):
+        try:
+            result = answer_question(query)
+        except Exception:
+            st.error(
+                "No se pudo generar una respuesta -- inténtalo de nuevo en unos "
+                "segundos. Si el problema persiste, es un fallo del servicio, no "
+                "de tu pregunta."
+            )
+            return
+
+    st.write(result.answer)
+    if result.structured_result and (result.structured_result.doi or result.structured_result.title):
+        cita = result.structured_result.doi or result.structured_result.title
+        st.caption(f"Fuente: {cita}")
+
+
 def main() -> None:
     st.set_page_config(page_title="EFSA Additives RAG", page_icon="🧪")
     st.title("Reevaluación de aditivos alimentarios (EFSA)")
@@ -160,7 +189,7 @@ def main() -> None:
         if not permitido:
             st.error(mensaje)
         else:
-            st.info("TODO: conectar con el grafo LangGraph (efsa_rag.graph.build)")
+            _render_answer(query)
 
     st.divider()
     render_update_section()

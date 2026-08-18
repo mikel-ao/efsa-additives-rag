@@ -12,7 +12,13 @@ pypdf>=4.3
 # decidido con evidencia sobre PyPDFLoader (0 vs 402 palabras rotas en
 # el PDF de fosfatos, ~8x más rápido), ver CLAUDE.md.
 pymupdf>=1.28
-sentence-transformers>=3.0
+# extra [onnx] -- añade optimum + onnxruntime, necesarios para
+# ingestion/embedding_model.py (backend ONNX + pesos int8, decisión de
+# memoria del deploy, sesión 18-ago-2026) -- torch sigue siendo
+# dependencia dura del paquete pase lo que pase, no se puede quitar de
+# aquí (verificado desinstalándolo: rompe el import incluso con este
+# extra), ver CLAUDE.md.
+sentence-transformers[onnx]>=3.0
 chromadb>=0.5
 
 # orquestación
@@ -21,8 +27,12 @@ langgraph>=0.2
 # LLM (DeepSeek, API compatible OpenAI)
 openai>=1.40
 
-# MCP
-mcp>=1.0
+# MCP -- servidor implementado con mcp.server.mcpserver.MCPServer, API
+# que solo existe desde 2.0 (en 1.x era mcp.server.fastmcp.FastMCP,
+# módulo distinto) -- pin >=1.0 permitía instalar una 1.x incompatible
+# con src/efsa_rag/mcp/server.py, corregido tras verificar la versión
+# real instalada (2.0.0) y su estructura de paquete.
+mcp>=2.0
 
 # UI
 streamlit>=1.38
