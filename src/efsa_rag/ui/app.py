@@ -9,10 +9,13 @@ reindexar en local y redesplegar).
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 LOCK_FILE = Path(__file__).parent.parent.parent.parent / "data" / "last_update_check.txt"
 MIN_INTERVAL = timedelta(hours=24)
@@ -175,6 +178,7 @@ def _render_answer(query: str) -> None:
         with st.spinner("Preparando datos (primera consulta tras un reinicio)..."):
             ensure_deploy_assets_downloaded()
     except Exception:
+        logger.exception("Fallo al descargar los assets de deploy desde MEGA S4")
         st.error(
             "No se pudieron descargar los datos necesarios para responder -- "
             "es un fallo de configuración del servicio, no de tu pregunta. "
@@ -186,6 +190,7 @@ def _render_answer(query: str) -> None:
         try:
             result = answer_question(query)
         except Exception:
+            logger.exception("Fallo al generar la respuesta (grafo/LLM)")
             st.error(
                 "No se pudo generar una respuesta -- inténtalo de nuevo en unos "
                 "segundos. Si el problema persiste, es un fallo del servicio, no "

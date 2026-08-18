@@ -29,7 +29,7 @@ pymupdf>=1.28
 # reinstala solo por este pin; solo un `pip install -r requirements.txt`
 # limpio (como el que corre el deploy) se lleva el build CPU-only.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.13.0+cpu
+#torch==2.13.0+cpu
 # extra [onnx] -- añade optimum + onnxruntime, necesarios para
 # ingestion/embedding_model.py (backend ONNX + pesos int8, decisión de
 # memoria del deploy, sesión 18-ago-2026) -- torch sigue siendo
@@ -61,6 +61,12 @@ streamlit>=1.38
 # siquiera vía Git LFS en un repo privado), por la licencia de los
 # PDFs -- ver CLAUDE.md/PROGRESS.md, sesión 18-ago-2026 continuación 21.
 boto3>=1.34
+
+# Carga automática de .env (deploy_assets.py) -- credenciales MEGA S4 en
+# desarrollo local sin depender de exportarlas a mano en cada terminal.
+# Sin efecto en Streamlit Community Cloud (ahí llegan como variables de
+# entorno reales vía "Secrets", no hay .env).
+python-dotenv>=1.0
 
 # dev
 pytest>=8.0

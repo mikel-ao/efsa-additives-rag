@@ -3524,3 +3524,83 @@ ui/app.py): **30 passed, 2 skipped**, mismos 2 de siempre.
 - Resto de pendientes sin cambios esta sesión (detección de
   ambigüedad Nodo 3, servidor MCP con transporte real, mejora de
   retrieval Nodo 2).
+
+## 2026-08-18 (continuación 22) — primer arranque en portátil nuevo (macOS): bug real de `.env` en `deploy_assets.py`, corregido y verificado con descarga real desde MEGA S4
+
+**Contexto:** primera vez ejecutando la app en una máquina nueva (macOS,
+sin nada exportado a mano en la terminal). Al hacer una consulta real
+desde la UI de Streamlit, la app mostraba el mensaje genérico "No se
+pudieron descargar los datos necesarios para responder" sin ningún
+traceback en terminal -- el error real estaba silenciado por un
+`except Exception: st.error(...)` desnudo en `_render_answer`
+(`ui/app.py`).
+
+**Diagnóstico (paso 1, temporal):** se sustituyó ese `except` por
+`traceback.print_exc()` + `st.exception(e)` para ver el error real sin
+adivinar. Con eso, el usuario confirmó la causa exacta: `_s3_client()`
+en `deploy_assets.py` lee `os.environ[...]` directamente, pero el
+módulo nunca cargaba `.env` -- `RuntimeError` de "faltan variables de
+entorno" pese a que `.env` sí las tenía bien puestas (el mismo bug ya
+detectado el día anterior en otra máquina, no descubierto de nuevo
+desde cero).
+
+**Fix real:**
+- `deploy_assets.py` ahora llama a `load_dotenv(dotenv_path=REPO_ROOT /
+  ".env", override=False)` a nivel de módulo, antes de que
+  `_s3_client()` lea ninguna variable -- ruta absoluta explícita, no la
+  búsqueda por defecto de `load_dotenv()` (que sube desde el cwd,
+  `streamlit run` no siempre se lanza desde la raíz del repo). Sin
+  efecto en Streamlit Community Cloud (ahí las credenciales llegan
+  como variables de entorno reales vía "Secrets", no hay `.env` --
+  `override=False` y un `.env` ausente no son un error).
+- `python-dotenv>=1.0` añadido a `requirements.txt`.
+
+**Verificación real, no solo revisión de código:** script puntual con
+`streamlit.testing.v1.AppTest` (mismo patrón ya usado en sesiones
+anteriores para medir memoria) ejecutado con
+`env -i PATH="$PATH" HOME="$HOME"` -- entorno realmente limpio, sin
+ninguna `MEGA_S4_*` exportada a mano, confirmando en el propio script
+que `"MEGA_S4_ENDPOINT_URL" not in os.environ` antes de arrancar.
+Resultado: descarga real completa desde MEGA S4 (xlsx 22,6 MB +
+`chroma.sqlite3` 500 MB), sin excepciones, y la consulta de aspartamo
+("What is the ADI of aspartame?") devolvió la respuesta correcta
+(ADI=40 mg/kg, DOI `10.2903/j.efsa.2013.3496`) -- confirma que el fix
+funciona de extremo a extremo con `.env` como única fuente de
+credenciales, no solo que el import no falla.
+
+**Revertido el DEBUG TEMPORAL, sustituido por logging permanente y
+discreto (pedido explícito del usuario, no volver al `except` mudo de
+antes):** `ui/app.py` ahora tiene `logger =
+logging.getLogger(__name__)` a nivel de módulo, y el bloque de
+`ensure_deploy_assets_downloaded()` hace
+`logger.exception("Fallo al descargar los assets de deploy desde MEGA
+S4")` antes de mostrar el mismo `st.error(...)` genérico de antes al
+usuario -- el traceback real queda en el log del proceso (visible en
+la terminal del deploy vía el "handler de último recurso" de Python
+cuando no hay logging configurado, sin exponer detalles internos en la
+UI pública), en vez de perderse sin rastro como pasaba antes de esta
+sesión. `st.exception(e)` (que sí mostraba el traceback completo al
+usuario final) NO se mantuvo -- era solo para el diagnóstico interactivo
+de esta sesión, no apto para la demo pública.
+
+**Verificado sin regresiones:** suite completa re-ejecutada tras los
+cambios (`ui/app.py` + `deploy_assets.py` + `requirements.txt`): **30
+passed, 2 skipped**, mismos 2 de siempre -- además de la verificación
+end-to-end con descarga real de arriba.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- `data/raw/OFT3_0_export_repository.xlsx` y `data/chroma/` ahora
+  existen en esta máquina nueva (descargados en la verificación de
+  arriba) -- confirmado en `.gitignore`, no se han colado en git.
+- **CERRADO, mismo día:** el segundo `except Exception` de
+  `_render_answer` (alrededor de `answer_question(query)`, fallos del
+  grafo/LLM/Chroma en tiempo de consulta) recibió el mismo patrón --
+  `logger.exception("Fallo al generar la respuesta (grafo/LLM)")` antes
+  del `st.error(...)` genérico ya existente. Suite completa re-corrida
+  tras el cambio: 30 passed, 2 skipped, sin regresiones. Ya no queda
+  ningún `except Exception` mudo en `_render_answer`.
+- Sigue sin haber confirmación de si el mismo bug de `.env` afectaba
+  también al deploy real en Streamlit Community Cloud (no debería,
+  porque ahí las credenciales llegan vía "Secrets"/`os.environ`
+  directamente, sin pasar por `.env` -- pero no verificado con un
+  deploy real todavía, ver pendiente de la entrada anterior).

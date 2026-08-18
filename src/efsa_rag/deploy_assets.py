@@ -33,7 +33,18 @@ import os
 import tarfile
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Carga .env explícitamente por ruta absoluta (no la búsqueda por
+# defecto de load_dotenv(), que sube desde el cwd -- `streamlit run`
+# no siempre se lanza desde la raíz del repo). En Streamlit Community
+# Cloud las credenciales llegan como variables de entorno reales via
+# "Secrets" (ver docstring del módulo), no hay .env ahí -- override=False
+# y un .env ausente no son un error, load_dotenv() simplemente no hace
+# nada en ese caso.
+load_dotenv(dotenv_path=REPO_ROOT / ".env", override=False)
 XLSX_PATH = REPO_ROOT / "data" / "raw" / "OFT3_0_export_repository.xlsx"
 CHROMA_PERSIST_DIR = REPO_ROOT / "data" / "chroma"
 CHROMA_SQLITE_FILE = CHROMA_PERSIST_DIR / "chroma.sqlite3"
