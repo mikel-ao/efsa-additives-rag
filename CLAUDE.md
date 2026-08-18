@@ -1199,6 +1199,126 @@ Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-pr
   - **No implementado todavía** -- ni el splitter, ni la extracción de
     `section_heading` vía fuente. Diseño verificado y documentado,
     pendiente de escribir con el resto del chunker.
+- **Chunker implementado (`ingestion/pdf_chunking.py`, sesión
+  17-ago-2026 continuación 12) y validado en lote sobre 22 PDF (sesión
+  18-ago-2026) -- dos hallazgos de calidad de texto, uno arreglado y uno
+  documentado como limitación de baja prioridad, no arreglado a
+  propósito:**
+  - **ARREGLADO -- guiones suaves (U+00AD) incrustados literalmente en
+    el texto extraído, específico de la plantilla EFSA/Wiley más
+    reciente.** Detectado inicialmente sobre 2 PDF de 2024-2025 (Shellac
+    E904, Acesulfame K E950) frente a PDF más antiguos (aspartamo 2013,
+    cloruros 2019, TiO2 2021): **474 de 1.170 bloques** del PDF de
+    acesulfame K contenían el carácter (1.168 apariciones en total,
+    esencialmente todo el documento) -- "Re-evaluation" salía como
+    "Re-\xadevaluation" en el texto de cada chunk. **CIFRA CORREGIDA
+    tras escanear los 161 PDF completos (sesión 18-ago-2026): no son 2,
+    son 10** -- el lote de validación de 22 PDF solo había incluido 2 de
+    los 10 casos reales por azar de la selección. Lista completa (todos
+    2023-2025, ninguno anterior): E1204 (2025, 310 apariciones), E174
+    (2025, 561), E472C (2025, 584), E551 (2024, 919), E904/Shellac
+    (2024, 463), E943A-E943B-E944 (2025, 171), E950/Acesulfame K (2025,
+    1.357), E954/sacarina (2024, 1.749), E961/neotamo (2025, 1.250),
+    E968 (2023, solo 8 -- el único caso marginal, el resto de dossiers
+    de esa sustancia en el corpus son de 2013 y no lo tienen). CERO en
+    cualquier PDF de 2013-2023 comprobado fuera de esta lista -- cambio
+    real de plantilla de Wiley a partir de 2023/2024, no un problema
+    preexistente sin detectar. Es un carácter de formato invisible,
+    nunca información real -- seguro quitarlo siempre. Fix (sin cambios,
+    ya escrito antes de conocer el alcance real): `extract_raw_blocks`
+    quita `\xad` del texto de cada bloque antes de cualquier otro
+    procesado (deduplicación, detección de encabezado, troceo) -- al ser
+    genérico (no específico de un PDF), **cubre los 10 sin necesidad de
+    tocar código** -- verificado explícitamente sobre los 10 tras
+    conocer la cifra real: 0 apariciones restantes en cada uno.
+  - **"ActualText with no position. Text may be lost or mispositioned."
+    -- INVESTIGADO A FONDO en los 7 PDF afectados (sesión 18-ago-2026,
+    continuación 2), CERRADO: sin pérdida de texto real en ningún caso,
+    aunque el patrón no es "solo aparece en portada" como sugería el
+    primer spot-check.** Advertencia propia de MuPDF
+    (`pymupdf.TOOLS.mupdf_warnings()`, no capturable por `sys.stderr`
+    normal). Aparece en los MISMOS 7 de los 10 PDF del hallazgo de
+    guiones suaves de 2023-2025 (E1204, E174-2025, E472C,
+    E943A-E943B-E944, E950, E961, E968-2023) -- 9 a 33 apariciones cada
+    uno, ausente en PDF de plantilla anterior.
+    - **Metodología:** para cada uno de los 7, se identificaron las
+      páginas exactas donde salta el aviso
+      (`pymupdf.TOOLS.reset_mupdf_warnings()` por página + comprobar
+      `'ActualText' in mupdf_warnings()`), se inspeccionó qué contenido
+      hay en cada una (portada, tabla de contenidos, tabla de apéndice,
+      o texto narrativo real), y para las páginas de texto narrativo
+      real se leyó el texto COMPLETO extraído buscando truncamiento,
+      repetición o incoherencia gramatical -- no solo "la densidad de
+      caracteres parece normal" (el criterio, más débil, del primer
+      spot-check).
+    - **Resultado por documento:** E950/Acesulfame K y E1204/pullulan
+      -- solo portada/CONTENTS (páginas 1-2), como ya se sabía.
+      E472C y E943A-E943B-E944 -- portada, tabla de contenidos (entradas
+      con líneas de puntos) y tablas de apéndice, ninguna página de
+      texto narrativo real. E961/neotamo -- portada + páginas 57-62,
+      TODAS dentro del Apéndice F/G (análisis BMD, tabla QSAR) --
+      verificada directamete la página 57 (la de menor densidad de
+      caracteres, marcada sospechosa por el heurístico de densidad):
+      es literalmente una tabla de datos QSAR (columnas de compuestos,
+      "NA", códigos "NC-00751"...), la baja densidad es simplemente que
+      una tabla tiene menos texto corrido que prosa, no pérdida --
+      y de todos modos el contenido de tabla ya se excluye del texto
+      narrativo por Opción A, independientemente de este aviso.
+    - **Los 2 casos genuinos de texto narrativo real marcado por el
+      aviso -- verificados sin pérdida, leyendo el texto completo:**
+      **E174/plata, páginas 12, 15 y 16** -- Sección "Overall conclusion
+      on technical data", 3.4 "Biological and toxicological data
+      submitted", 3.4.1 "Genotoxicity", y la propia **Sección 4
+      "DISCUSSION"** completa -- párrafos largos, gramaticalmente
+      coherentes, sin frases cortadas a mitad ni saltos de contenido,
+      citas y notas al pie (15, 16, 19...) todas presentes y en su
+      sitio. **E968/eritritol, página 41** -- Sección 6 "CONCLUSIONS"
+      (incluye el ADI de 0,5 g/kg pc/día y la conclusión de que la
+      exposición lo supera) y Sección 7 "RECOMMENDATION", ambas
+      completas y coherentes.
+    - **Conclusión:** el aviso de MuPDF no se traduce en pérdida de
+      texto real en ninguno de los 7 PDF, ni siquiera en las 2 páginas
+      donde coincide con contenido narrativo sustantivo (Discussion,
+      Conclusions) -- probablemente lo dispara algún otro elemento con
+      estilo especial en esa misma página (nota al pie, subíndice,
+      cabecera repetida) sin afectar la extracción de la prosa
+      principal. **No requiere ninguna acción -- ni exclusión de chunk
+      ni revisión manual.** Cerrado, no reabrir sin evidencia nueva de
+      contenido realmente perdido (ej. una frase que corte a mitad al
+      leer un chunk generado).
+  - **NO ARREGLADO A PROPÓSITO -- título largo partido en dos bloques
+    bold distintos, dando un `section_heading` fragmentado para ese
+    chunk concreto** (ej. "chloride (E 511) as food additives" en vez
+    del título completo "Re-evaluation of hydrochloric acid... as food
+    additives"). Confirmado sistémico, no un caso raro: presente en 8
+    de los 16 PDF del lote de validación de 18-ago-2026 (tartratos,
+    nitritos, sorbatos, celulosas, dimetilpolisiloxano, sulfitos,
+    silicatos de aluminio, TiO2) además de los 2 casos ya vistos
+    (cloruros, fosfatos) -- todos de la plantilla EFSA/Wiley anterior a
+    2024. **Trade-off confirmado con el bug de guiones suaves de
+    arriba: los 2 PDF de la plantilla 2024+ (Shellac, Acesulfame K) NO
+    tienen este problema** -- su título largo permanece en un solo
+    bloque bold pese a envolver dos líneas -- pero sí tienen el
+    problema de guiones suaves. Ninguna plantilla es limpia en los dos
+    frentes a la vez; el guion suave se arregló porque corrompe el
+    TEXTO narrativo de cada chunk del documento entero, mientras que el
+    título partido solo afecta la ETIQUETA `section_heading` de un
+    puñado de chunks (los del arranque del documento) -- sin pérdida de
+    datos, confirmado dos veces (sesión de implementación + lote de 16
+    PDF). Prioridad baja, no se arregla sin motivo nuevo (ej. si
+    `section_heading` empieza a usarse para algo más que texto
+    informativo de apoyo en el Nodo 4).
+  - **Misma clase de problema, sin investigar más por ahora:** el
+    statement de luteína (`sinE_10.2903_j.efsa.2012.2589.pdf`) produjo
+    un par de encabezados de sección extraños ("level*", "reported
+    use") -- probablemente fragmentos de leyenda/subtítulo adyacentes a
+    una tabla, en negrita pero fuera del bbox que `find_tables()`
+    detectó para esa tabla, así que no se excluyeron como contenido
+    tabular. Mismo tipo de imprecisión cosmética que el título partido
+    -- una etiqueta de sección rara para un chunk puntual, sin pérdida
+    de datos ni de contenido narrativo real. No investigado a fondo
+    -- anotado aquí para no tener que redescubrirlo si aparece de nuevo
+    al escalar al corpus completo.
 - **Mapeo sustancia→archivo para los PDFs multi-E-number -- CIFRA
   CORREGIDA (sesión 17-ago-2026, continuación 2): no son 29/161, son AL
   MENOS 36/161 (22%), y ninguna de las dos columnas del checklist
@@ -1598,6 +1718,46 @@ Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-pr
       devolviendo `adi_value=None` -- este campo nuevo es sobre la
       CONFIANZA en la sustancia, no sobre si tiene ADI (eso ya se sabe
       por otro campo).
+    - **IMPLEMENTADO (sesión 17-ago-2026, continuación 12):** los 3
+      niveles están implementados en
+      `ingestion/pdf_chunking.py::resolve_dossier_substances` --
+      `substances_per_dossier(require_adi=True)` (Nivel 1) ->
+      `substances_per_dossier(require_adi=False)` (Nivel 2, el
+      parámetro `require_adi` que aquí seguía "propuesto" ya existe en
+      `openfoodtox.py`) -> coincidencia de nombre de sustancia como
+      palabra completa dentro del título, sobre TODA la hoja `SUB`
+      (Nivel 3, `_guess_substance_by_title`). Verificado con los 5 PDF
+      procesados en esta sesión (chlorides -> 4 sustancias tier 2,
+      phosphates -> 1 sustancia tier 1, aspartamo E951 -> 1 sustancia
+      tier 1, más 2 dossiers de `--limit 2`) -- ningún caso tier 3
+      encontrado todavía en la práctica (Sucralose/Shellac, los 2 casos
+      conocidos que sí deberían resolver en tier 3, no se han vuelto a
+      probar explícitamente en esta sesión).
+    - **DECISIÓN TOMADA sobre el 1/162 sin sustancia estructurada
+      (statement/sweeteners, "Statement on two recent scientific
+      articles on the safety of artificial sweeteners",
+      `sinE_10.2903_j.efsa.2011.1996.pdf`, DOI
+      `10.2903/j.efsa.2011.1996`) -- confirmado por el usuario tras ver
+      el resultado del pipeline: se mantiene el comportamiento actual,
+      NO se le asigna un `substance_uuid` vacío/sentinela para forzar
+      que produzca `RetrievedChunk`. Este documento queda FUERA del
+      índice de retrieval (Nodo 2) **por diseño, no por bug** -- ningún
+      nivel de resolución (estructural con o sin ADI, ni coincidencia
+      de nombre en el título) puede identificar de qué sustancia trata
+      sin inventar una relación de identidad que el dato no respalda
+      (el título no menciona ningún E-number ni nombre químico con
+      suficiente especificidad -- "artificial sweeteners" en plural,
+      sin concretar). Es la MISMA disciplina que ya rige los 3 niveles
+      (preferir "sin sustancia resuelta" a una identidad inferida sin
+      respaldo) llevada a su conclusión lógica en el único caso donde
+      ni siquiera el heurístico más débil (Nivel 3) encuentra nada.
+      Documentado aquí explícitamente para que quien retome el pipeline
+      no lo trate como una laguna a rellenar: sus chunks de texto SÍ se
+      generan (`DossierChunkingResult.chunks`), simplemente no se
+      envuelven en `RetrievedChunk` ni entran en el índice vectorial
+      cuando se implemente ese paso -- sigue siendo el único dossier de
+      los 162 en esta situación (no se ha encontrado ningún otro caso
+      nuevo al procesar los 5 PDF de esta sesión).
 
 ## Decisiones de arquitectura ya tomadas (no las reabras sin motivo nuevo)
 
@@ -1658,16 +1818,24 @@ Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-pr
   no estable de Streamlit y las IPs se comparten/cambian con facilidad).
   No confundas una capa con la otra al documentar o modificar esto.
 - **Precio LLM de referencia (ajustar si cambia):** DeepSeek V4-Flash,
-  ~$0.001-0.002 por consulta según franja horaria (precios actualizados
-  16-ago-2026 con tarifas punta/valle). Presupuesto de referencia:
-  6-7€/mes cubre miles de consultas incluso en el peor caso. Se evaluó
-  Kimi K2.6/K3 como alternativa: K2.6 es más caro que DeepSeek y con peor
-  puntuación en benchmarks generales; K3 iguala casi a modelos de
-  frontera pero a 15-20x el coste. Se mantiene DeepSeek por defecto.
-  **Antes de cambiar de proveedor por benchmarks genéricos**, construir
-  un set de 10-15 casos de prueba del Nodo 4 (con las reglas de
-  comunicación de riesgo) y medir tasa de cumplimiento real, no decidir
-  por índices de inteligencia genéricos que no miden eso.
+  ~$0.0005-0.0014 por consulta según franja horaria -- cifra recalculada
+  y CONFIRMADA (sesión 18-ago-2026) contra la fuente de pricing actual
+  (misma tarifa punta/valle actualizada 16-ago-2026) incluyendo ya el
+  contexto real de `retrieved_chunks` (k=3-5 chunks recuperados, ~150-180
+  tokens/chunk medidos sobre el pipeline de chunking implementado en la
+  sesión anterior -- ver "Estado del código", pendiente #5). Mismo orden
+  de magnitud que la estimación previa de $0.001-0.002/consulta, que se
+  había medido con `retrieved_chunks` vacío (Nodo 2 sin implementar
+  todavía en ese momento) -- el coste de incluir el contexto narrativo
+  real no cambia la conclusión de presupuesto. Presupuesto de
+  referencia: 6-7€/mes cubre miles de consultas incluso en el peor caso.
+  Se evaluó Kimi K2.6/K3 como alternativa: K2.6 es más caro que DeepSeek
+  y con peor puntuación en benchmarks generales; K3 iguala casi a
+  modelos de frontera pero a 15-20x el coste. Se mantiene DeepSeek por
+  defecto. **Antes de cambiar de proveedor por benchmarks genéricos**,
+  construir un set de 10-15 casos de prueba del Nodo 4 (con las reglas
+  de comunicación de riesgo) y medir tasa de cumplimiento real, no
+  decidir por índices de inteligencia genéricos que no miden eso.
   **Esta estimación de coste asume "thinking" desactivado** (ver bullet
   de arriba). Medido en sesión con el mismo prompt del Nodo 4: 799
   tokens de salida con "thinking" activo (esfuerzo "high", casi todo
@@ -1837,15 +2005,57 @@ Pendiente, en orden de menor a mayor incertidumbre:
    ver "Hallazgos verificados" para el desglose completo (73 sustancia
    única sin ADI tipo TiO2, 22 multi-sustancia sin ADI, 3 sin ningún
    enlace estructural tras arreglar la agrupación por DOI en vez de por
-   título) y el diseño de resolución en 3 niveles (Nivel 1 = con ADI ya
-   implementado, Nivel 2 = mismo enlace sin exigir ADI -- propuesto como
-   parámetro `require_adi`, Nivel 3 = `substance_uuid_by_name()` sobre
-   nombre de título, solo para los 3 casos sin enlace) que cubre 161 de
-   162 dossiers, dejando 1 sin sustancia estructurada a propósito. Diseño
-   de esquema de metadatos por chunk (indexar N veces, uno por sustancia,
-   + campo `substance_resolution_tier`) sigue siendo solo diseño, no
-   implementado -- eso es lo que queda de este pendiente antes de
-   escribir el chunker en sí.
+   título) y el diseño de resolución en 3 niveles (Nivel 1 = con ADI,
+   Nivel 2 = mismo enlace sin exigir ADI, Nivel 3 =
+   `substance_uuid_by_name()`/coincidencia de nombre en título) que
+   cubre 161 de 162 dossiers, dejando 1 sin sustancia estructurada a
+   propósito -- ese 1/162 (statement/sweeteners) se queda fuera del
+   índice de retrieval POR DISEÑO, decisión confirmada por el usuario,
+   ver el bullet "DECISIÓN TOMADA sobre el 1/162..." más arriba.
+   **IMPLEMENTADO (sesión 17-ago-2026, continuación 12) --
+   `ingestion/pdf_chunking.py`:** extracción de texto vía PyMuPDF
+   directo (no el wrapper `PyMuPDFLoader`, necesita bbox/fuente por span
+   -- ver el módulo para el hallazgo nuevo de esta sesión sobre pérdida
+   de espacios en modo "dict" para ciertas fuentes bold incrustadas),
+   detección de `section_heading` vía fuente tipográfica (cubre ambas
+   convenciones, numerada y plana en mayúsculas), exclusión de tablas
+   (bbox de `page.find_tables()` + patrón de leyenda "Table N:"),
+   troceo con `RecursiveCharacterTextSplitter` por sección, y
+   resolución de sustancia en 3 niveles
+   (`resolve_dossier_substances`, con `substances_per_dossier(require_adi=...)`
+   ya implementado con el parámetro que aquí seguía "propuesto").
+   Script de ejecución: `scripts/build_chunk_index.py` (`--dry-run`/
+   `--limit`/`--pdf`, no toca embeddings ni Chroma). Validado sobre 5
+   PDF (los 3 de referencia + aspartamo E951 + 2 más vía `--limit 2`) --
+   ver PROGRESS.md para el detalle de la sesión.
+   **CORPUS COMPLETO PROCESADO (sesión 18-ago-2026): 161/161 PDF, sin
+   errores, sin ningún PDF con 0 chunks.** 35.991 chunks, 67.827
+   `RetrievedChunk` (dossier-sustancia-chunk); distribución de
+   sustancias resueltas por tier (a nivel dossier-sustancia, 256 pares
+   en total): tier 1 (con ADI) 105, tier 2 (enlace sin ADI) 149, tier 3
+   (nombre en título) 2 -- exactamente los 2 casos conocidos
+   (Shellac, sucralosa statement), ningún tier 3 nuevo inesperado. Un
+   solo dossier sin sustancia resuelta, el mismo 1/162 ya documentado
+   como excluido por diseño (`sinE_10.2903_j.efsa.2011.1996.pdf`).
+   **Persistido en `data/processed/chunks.jsonl`** (gitignored, mismo
+   motivo de licencia que `data/chroma/` -- texto literal de los PDF,
+   ver la decisión de licencia más arriba): 67.827 líneas JSON, una por
+   (chunk, sustancia resuelta), con campos de `RetrievedChunk` +
+   `pdf_filename` + `chunk_group_id` (id compartido entre las N copias
+   del mismo chunk que sirven a distintas sustancias -- el mismo
+   esquema "N copias por chunk" ya diseñado para Chroma, ver
+   "Hallazgos verificados"). Generado con
+   `python scripts/build_chunk_index.py --all --save-jsonl
+   data/processed/chunks.jsonl` -- `_run_all` escribe y hace `flush()`
+   tras cada dossier, así que un fallo a mitad de la corrida (o del
+   siguiente paso, embeddings) no obliga a reprocesar los PDF ya
+   hechos. Existe también `--save-preview` (JSON con ejemplos, para
+   inspección puntual, no pensado para el corpus completo -- usar
+   `--save-jsonl` para eso). **Pendiente dentro de este mismo punto,
+   todavía sin implementar:** el paso de indexado en Chroma en sí
+   (embeddings + `chromadb`), que es el que de verdad desbloquea el
+   Nodo 2 -- `data/processed/chunks.jsonl` es el material de partida
+   para ese paso, no un índice vectorial consultable todavía.
 6. Detección de ambigüedad en el Nodo 3 (ver "Hallazgos verificados").
 7. Servidor MCP (`mcp/`, carpeta vacía todavía).
 8. Deploy siguiendo la Opción A descrita arriba.

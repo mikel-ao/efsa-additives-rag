@@ -6,7 +6,12 @@ requests>=2.32
 # RAG
 langchain>=0.3
 langchain-community>=0.3
+langchain-text-splitters>=0.3
 pypdf>=4.3
+# loader por defecto para el chunker (ver ingestion/pdf_chunking.py) --
+# decidido con evidencia sobre PyPDFLoader (0 vs 402 palabras rotas en
+# el PDF de fosfatos, ~8x más rápido), ver CLAUDE.md.
+pymupdf>=1.28
 sentence-transformers>=3.0
 chromadb>=0.5
 

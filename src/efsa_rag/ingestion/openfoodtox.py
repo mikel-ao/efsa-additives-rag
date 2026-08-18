@@ -455,7 +455,7 @@ class OpenFoodToxStore:
         return result
 
     def substances_per_dossier(
-        self, corpus: pd.DataFrame | None = None
+        self, corpus: pd.DataFrame | None = None, require_adi: bool = True
     ) -> dict[str, list[DossierSubstance]]:
         """Para cada dossier de `corpus` (por defecto
         `current_reevaluation_corpus()`), la lista COMPLETA de sustancias
@@ -493,13 +493,25 @@ class OpenFoodToxStore:
         hermana por separado, tomando la UNIÓN.
 
         Filtro de ADI (mismo criterio que `_adi_row_for_toxref_uuids`):
-        solo cuenta como "sustancia del dossier" un `Parent UUID` cuya
-        fila de `FLEX_SUM.ToxRefValues` tiene `ADI_LOWER_VALUE_COLUMN` no
-        nulo -- excluye sustancias de referencia toxicológica sin ADI
-        propio (ej. los 17 compuestos N-nitroso enlazados al dictamen de
-        nitritos vía `OtherReferenceValues`, verificado que sin este
-        filtro nitritos daría 20 "sustancias" en vez de las 3 reales:
-        Sodium nitrite, Potassium nitrite, Nitrites).
+        por defecto (`require_adi=True`), solo cuenta como "sustancia del
+        dossier" un `Parent UUID` cuya fila de `FLEX_SUM.ToxRefValues`
+        tiene `ADI_LOWER_VALUE_COLUMN` no nulo -- excluye sustancias de
+        referencia toxicológica sin ADI propio (ej. los 17 compuestos
+        N-nitroso enlazados al dictamen de nitritos vía
+        `OtherReferenceValues`, verificado que sin este filtro nitritos
+        daría 20 "sustancias" en vez de las 3 reales: Sodium nitrite,
+        Potassium nitrite, Nitrites).
+
+        `require_adi=False` -- Nivel 2 del diseño de resolución en 3
+        niveles (ver CLAUDE.md, "Hallazgos verificados", continuación 6):
+        mismo enlace estructural, sin exigir ADI relleno -- misma
+        fiabilidad de IDENTIDAD de sustancia que con `require_adi=True`,
+        solo cambia si aporta o no un valor numérico. Resuelve los
+        dossiers de sustancia única o multi-sustancia SIN ADI (patrón
+        TiO2 y dossiers de grupo como cloruros/alginatos) que
+        `require_adi=True` deja vacíos -- ver el desglose de los 99
+        dossiers en CLAUDE.md antes de usar este parámetro para otra
+        cosa.
 
         Devuelve {dossier_uuid (Document UUID tal como aparece en
         `corpus`): [DossierSubstance, ...]}, ordenado por chemical_name
@@ -532,7 +544,8 @@ class OpenFoodToxStore:
                 & dd["DOCUMENT TYPE"].isin(TOXREF_LINK_DOCUMENT_TYPES)
             ]
             toxref_rows = flex[flex["Document UUID"].isin(linked["DOCUMENT UUID"])]
-            toxref_rows = toxref_rows[toxref_rows[ADI_LOWER_VALUE_COLUMN].notna()]
+            if require_adi:
+                toxref_rows = toxref_rows[toxref_rows[ADI_LOWER_VALUE_COLUMN].notna()]
             substance_uuids = set(toxref_rows["Parent UUID"].dropna())
 
             substances = []

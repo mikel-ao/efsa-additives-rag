@@ -33,44 +33,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore  # noqa: E402
+from efsa_rag.ingestion.pdf_naming import (  # noqa: E402
+    clean_doi as _clean_doi,
+)
+from efsa_rag.ingestion.pdf_naming import (
+    destination_filename as _destination_filename_impl,
+)
+from efsa_rag.ingestion.pdf_naming import (
+    e_numbers_from_title as _e_numbers_from_title,
+)
 
 XLSX_PATH = Path(__file__).resolve().parent.parent / "data" / "raw" / "OFT3_0_export_repository.xlsx"
 CSV_OUT_PATH = Path(__file__).resolve().parent.parent / "data" / "pdf_download_checklist.csv"
 MD_OUT_PATH = Path(__file__).resolve().parent.parent / "data" / "pdf_download_checklist.md"
 
-E_NUMBER_PATTERN = re.compile(r"\bE\s?\d{3,4}[a-z]{0,2}(?:\([iv]+\))?\b", re.IGNORECASE)
-
-# LiteratureReference.LinkToPersistentIdentifier no es consistente en el
-# xlsx real -- verificado sobre el corpus de 162: 147 filas con prefijo
-# "doi:", 15 con "doi. org/" (con espacio y "org/" en vez de dos puntos).
-# Un DOI siempre empieza por "10." (especificación DOI) -- se usa eso
-# como ancla en vez de una lista de prefijos conocidos, para no
-# depender de que no aparezca una tercera variante de prefijo mañana.
-DOI_PATTERN = re.compile(r"10\.\d{4,}/.+")
-
-
-def _clean_doi(raw_doi: str | None) -> str | None:
-    """Normaliza el prefijo del DOI -- ver DOI_PATTERN arriba, el xlsx
-    real mezcla "doi:10.2903/..." y "doi. org/10.2903/...". Ancla en el
-    propio DOI ("10." en adelante) en vez de en el prefijo, para cubrir
-    ambas variantes con la misma lógica."""
-    if raw_doi is None:
-        return None
-    match = DOI_PATTERN.search(raw_doi)
-    return match.group(0).strip() if match else raw_doi.strip()
-
-
-def _e_numbers_from_title(title: str) -> list[str]:
-    """E-numbers citados en el título, en orden de aparición, sin
-    duplicados -- heurístico de texto, no un campo estructural (mismo
-    tipo de limitación que otros heurísticos de título de este
-    proyecto, ver CLAUDE.md). Normaliza "E951"/"E 951" a "E951"."""
-    seen: list[str] = []
-    for match in E_NUMBER_PATTERN.finditer(title):
-        normalized = match.group(0).upper().replace(" ", "")
-        if normalized not in seen:
-            seen.append(normalized)
-    return seen
+# DOI/nombre de archivo: lógica compartida con ingestion/pdf_chunking.py
+# (que necesita mapear PDF -> dossier con el mismo criterio), extraída a
+# ingestion/pdf_naming.py en sesión 17-ago-2026 (continuación 12) para no
+# duplicarla -- ver ese módulo para el razonamiento de DOI_PATTERN.
 
 
 def _substances_for_dossier(
@@ -125,21 +105,14 @@ def _substances_for_dossier(
 
 
 def _destination_filename(doi: str | None, e_numbers: list[str], fallback_index: int) -> str:
-    """Nombre de archivo determinista: prefijo de E-numbers (para
-    reconocer la sustancia a simple vista) + sufijo del DOI. El DOI
-    normalmente garantiza unicidad, con UNA excepción real encontrada
-    en sesión (ver `main()`, deduplicación por DOI antes de escribir):
-    "Re-evaluation of saccharin..." aparece dos veces en el xlsx con el
-    MISMO DOI porque el título tiene una variante con una errata de
-    espacio ("and calcium" / "andcalcium") -- dos filas de corpus para
-    el mismo documento real. Si no hay DOI (no debería pasar en el
-    corpus final, pero no asumirlo sin comprobar), cae a un índice
-    secuencial para seguir siendo único."""
-    e_prefix = "-".join(e_numbers) if e_numbers else "sinE"
-    if doi:
-        doi_suffix = doi.replace("/", "_").replace(":", "_")
-        return f"{e_prefix}_{doi_suffix}.pdf"
-    return f"{e_prefix}_sinDOI_{fallback_index:03d}.pdf"
+    """Nombre de archivo determinista -- ver
+    ingestion.pdf_naming.destination_filename para el criterio completo
+    (prefijo de E-numbers + sufijo del DOI). UNA excepción real conocida
+    (ver `main()`, deduplicación por DOI antes de escribir): "Re-evaluation
+    of saccharin..." aparece dos veces en el xlsx con el MISMO DOI por una
+    variante de título con una errata de espacio -- dos filas de corpus
+    para el mismo documento real."""
+    return _destination_filename_impl(doi, e_numbers, fallback_index)
 
 
 def main() -> None:

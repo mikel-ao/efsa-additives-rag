@@ -1309,3 +1309,418 @@ numerada. Detalle completo en CLAUDE.md, "Hallazgos verificados".
   resto del chunker.
 - Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
   sesión.
+
+## 2026-08-17 (continuación 12) — Pipeline de chunking implementado y validado en 5 PDF
+
+**Contexto:** con loader, tratamiento de tablas, splitter y detección de
+encabezados ya decididos (continuaciones 8-11), se pidió implementar el
+pipeline completo -- extracción, detección de sección, exclusión de
+tablas, troceo, resolución de sustancia en 3 niveles y ensamblado de
+`RetrievedChunk` -- validado primero en modo `--dry-run`/`--limit`
+(regla de CLAUDE.md sobre scripts en lote) sobre los 3 PDF de referencia
+antes de tocar el corpus completo. Sin instalar nada nuevo (`pymupdf` y
+`langchain-text-splitters` ya estaban en el venv de sesiones de prueba
+anteriores, solo se añadieron a `requirements.txt` para reflejar que
+ahora son dependencias reales del pipeline, no experimentos puntuales).
+
+**Implementado:**
+- `ingestion/pdf_naming.py` (nuevo): `clean_doi`/`e_numbers_from_title`/
+  `destination_filename` extraídos de `scripts/generate_pdf_checklist.py`
+  para que el chunker pueda mapear PDF -> fila del corpus con el mismo
+  criterio, sin reimplementarlo. `generate_pdf_checklist.py` actualizado
+  para importar de ahí -- verificado que el refactor es un no-op exacto
+  (`diff` byte a byte del CSV regenerado contra el anterior).
+- `openfoodtox.py::substances_per_dossier` -- nuevo parámetro
+  `require_adi: bool = True` (Nivel 2 del diseño de 3 niveles, que
+  seguía "propuesto, no implementado" desde la continuación 6). Default
+  preserva el comportamiento anterior -- los 15 tests existentes siguen
+  en verde.
+- `ingestion/pdf_chunking.py` (nuevo): pipeline completo.
+  - Extracción: PyMuPDF directo (`page.get_text("dict"/"blocks",
+    textpage=tp)` sobre el MISMO textpage compartido -- verificado que
+    `block_no` coincide 1:1 entre ambos modos, permite usar "blocks"
+    para el texto y "dict" solo para decidir negrita).
+  - **Hallazgo nuevo no anticipado en el diseño de continuación 11:**
+    el modo "dict"/"rawdict" de PyMuPDF concatena palabras SIN espacio
+    para varias fuentes bold incrustadas de estos PDF (glifo de espacio
+    con avance cero en la fuente subseteada) --
+    "Chemistryofphosphates" en vez de "Chemistry of phosphates".
+    Confirmado que NO es un problema de espacios entre spans (gaps de
+    bbox) sino de la fuente en sí (gaps intra-carácter también dan 0,
+    los glifos están literalmente pegados). El modo "blocks" (mismo
+    algoritmo de layout que la extracción de texto plano ya validada
+    con 0 palabras rotas en la comparación PyPDFLoader-vs-PyMuPDFLoader)
+    no tiene este problema -- por eso el texto de cada bloque sale de
+    "blocks", nunca de "dict".
+  - Detección de encabezado: fuente bold vía regex sobre el nombre de
+    fuente (`bold|\.b(?:\+|$)`, case-insensitive) -- el bit `bold` del
+    bitfield `flags` de PyMuPDF resultó SIEMPRE 0 para estas fuentes
+    incrustadas/subseteadas (verificado: `flags=4` constante en fuentes
+    bold y regular por igual), así que no es la señal fiable que
+    parecía en el diseño de continuación 11 -- el nombre de fuente sí
+    lo es.
+  - Cabeceras/pies de página recurrentes (título del dictamen repetido
+    en negrita en cada página, numeración de página, banner de descarga
+    de Wiley) excluidos vía el mismo principio que
+    `_discussion_boilerplate_texts` en `openfoodtox.py`: texto
+    normalizado (dígitos fuera) que se repite en >=3 páginas distintas
+    del mismo PDF no es contenido real. Verificado necesario -- sin
+    esto, el título del dictamen repetido en negrita en casi todas las
+    páginas se colaría como "encabezado de sección" en cada página.
+  - Exclusión de tablas: `page.find_tables()` (bboxes) + patrón de
+    leyenda `"Table N:"` anclado al inicio de bloque -- Opción A ya
+    decidida.
+  - Troceo: `RecursiveCharacterTextSplitter` (1000/150 por defecto, sin
+    ajuste fino todavía) aplicado POR SECCIÓN (agrupada por el último
+    encabezado visto, puede cruzar páginas) -- decisión de diseño de
+    esta sesión, no estaba zanjada en continuación 11: mantiene
+    `section_heading` exacto por chunk a costa de más chunks pequeños
+    de los que daría trocear el documento entero de una vez (719 chunks
+    para 156 páginas en el caso de fosfatos, con 164 secciones
+    detectadas).
+  - Resolución de sustancia: `resolve_dossier_substances` -- Nivel 1
+    (`substances_per_dossier(require_adi=True)`) -> Nivel 2
+    (`require_adi=False`) -> Nivel 3 (`_guess_substance_by_title`,
+    coincidencia de nombre completo de palabra contra TODA la hoja
+    `SUB`, se queda con el más largo si hay varios).
+  - `RetrievedChunk`: un objeto por combinación (chunk, sustancia
+    resuelta) -- implementa el esquema "N copias por chunk" ya
+    diseñado en CLAUDE.md.
+- `scripts/build_chunk_index.py` (nuevo): CLI con `--dry-run`
+  (procesa solo los 3 PDF de referencia), `--limit N`, `--pdf
+  <substring>`, y sin argumentos (mismo comportamiento que `--dry-run`,
+  con aviso de cómo escalar) -- nunca procesa los 161 por accidente.
+  `--save-preview <ruta>` opcional para volcar los chunks/metadatos a
+  JSON, solo para inspección. No toca embeddings ni Chroma.
+
+**Validado (dry-run + comprobaciones adicionales, sin procesar el corpus
+completo):**
+- Los 3 PDF de referencia (corto/statement, fosfatos, cloruros) +
+  aspartamo E951 (`--pdf E951`) + 2 más vía `--limit 2` (quillaia E999,
+  alginatos E400-404) -- 5 dossiers en total, sin errores.
+- Cloruros -> 281 chunks, 4 sustancias tier 2 (sin ADI, coincide con lo
+  ya documentado en CLAUDE.md), 1124 `RetrievedChunk`. Fosfatos -> 719
+  chunks, 1 sustancia tier 1 (ADI de grupo único), 719 `RetrievedChunk`.
+  Aspartamo -> 1033 chunks, 1 sustancia tier 1. Statement/sweeteners ->
+  12 chunks, 0 sustancias resueltas por ningún nivel, 0 `RetrievedChunk`
+  -- ver más abajo.
+- **Exclusión de tablas verificada dos veces:** (1) smoke-test en el
+  script (ningún chunk EMPIEZA con una leyenda "Table N:" -- primera
+  versión del check usaba `re.search` sin anclar y daba falsos
+  positivos sobre frases narrativas normales que mencionan una tabla
+  por número, ej. "...summarised in Table 9.", corregido anclando al
+  inicio del chunk); (2) verificación directa más fuerte contra el caso
+  ya conocido de la Tabla 5a de fosfatos (CLAUDE.md, sesión de
+  diagnóstico de tablas) -- confirmado que ni la leyenda ("Table 5a:
+  Summary of dietary exposure...") ni una fila numérica real de esa
+  tabla aparecen en ningún chunk generado.
+- Flags de la CLI verificadas por separado: sin argumentos cae a los 3
+  PDF de referencia con aviso; `--pdf E951` aísla un solo dossier;
+  `--limit 2` procesa 2 dossiers correctamente.
+
+**Decisión del usuario sobre el caso irresoluble (statement/sweeteners,
+el único 1/162 sin sustancia por ningún nivel):** se mantiene el
+comportamiento actual -- NO se le fuerza un `substance_uuid` vacío para
+producir `RetrievedChunk`. Queda fuera del índice de retrieval POR
+DISEÑO (misma disciplina que ya aplican los 3 niveles: preferir "sin
+sustancia resuelta" a una identidad inferida sin respaldo real).
+Documentado explícitamente en CLAUDE.md para que no se trate como una
+laguna a rellenar más adelante.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **El corpus completo (161 PDF) no se ha procesado todavía** -- esta
+  sesión validó el pipeline sobre 5 PDF a propósito, tal como se pidió
+  ("un paso a la vez"). Antes de correrlo sobre los 161: decidir si
+  vale la pena ajustar `chunk_size`/`chunk_overlap` (los 719 chunks de
+  fosfatos para 156 páginas son más de lo que daría un troceo por
+  documento completo en vez de por sección) y confirmar que no aparece
+  ningún caso tier 3 real inesperado (los 2 casos conocidos,
+  Sucralose/Shellac, no se han vuelto a probar explícitamente en esta
+  sesión).
+- **El paso de indexado en Chroma (embeddings + `chromadb`) sigue sin
+  empezar** -- este pipeline produce `RetrievedChunk` en memoria a
+  partir de un PDF, no un índice persistente. Es el siguiente paso
+  lógico para desbloquear el Nodo 2 de verdad.
+- Imprecisión cosmética observada, no bloqueante: títulos largos que
+  envuelven en dos líneas a veces se detectan como dos bloques bold
+  separados, dando un `section_heading` fragmentado para ese chunk
+  concreto (ej. "chloride (E 511) as food additives" en vez del título
+  completo) -- no pierde datos, solo hace menos legible esa etiqueta
+  puntual.
+- Sin cambios en Nodo 1, Nodo 2 (todavía `NotImplementedError`, ver
+  arriba), Nodo 4, servidor MCP, deploy esta sesión.
+
+## 2026-08-18 — Presupuesto de contexto del Nodo 4, filtro de longitud mínima, lote intermedio de 16 PDF, fix de guiones suaves
+
+**Contexto:** antes de escalar el chunker a los 161 PDF, se pidió (1)
+una estimación del presupuesto de contexto del Nodo 4 con chunks reales
+(tamaño medio × k=3-5 recuperados), (2) un filtro de longitud mínima
+para descartar chunks casi vacíos, y (3) validar el pipeline sobre un
+lote intermedio de 15-20 PDF elegidos a propósito (no al azar) antes de
+procesar el corpus completo.
+
+**Presupuesto de contexto (sin tocar código, solo medición):** sobre los
+2.559 chunks de los 6 PDF ya procesados -- media 704 caracteres/105
+palabras por chunk, ~150-180 tokens estimados (dos métodos, sin
+tokenizer real disponible: chars/4 y palabras/0,75, convergen). Con
+k=3-5 chunks recuperados + system prompt del Nodo 4 (575 tokens,
+medido) + bloque de `structured_result`: presupuesto total estimado
+~1.250-2.000 tokens de entrada por consulta -- muy por debajo de
+cualquier límite de contexto real, sin riesgo de truncamiento.
+**Confirmado por el usuario contra la fuente de pricing real** (misma
+tarifa punta/valle del 16-ago): con este contexto de `retrieved_chunks`
+ya incluido, el coste sigue en ~$0,0005-0,0014/consulta, mismo orden de
+magnitud que la estimación anterior (que se había medido con
+`retrieved_chunks` vacío). CLAUDE.md actualizado con la cifra
+recalculada.
+
+**Implementado -- filtro de longitud mínima:**
+`ingestion/pdf_chunking.py::split_sections` gana el parámetro
+`min_chunk_length` (`MIN_CHUNK_LENGTH = 50` por defecto), descarta
+cualquier chunk cuyo texto (sin espacios) quede por debajo del umbral
+antes de que llegue a `TextChunk`/`RetrievedChunk`. Confirmado sobre los
+2.559 chunks de los 6 PDF: **25 descartados (0,98%)** -- exactamente los
+mismos 25 <50 caracteres ya medidos en la sesión anterior. Tras el
+filtro: 2.534 chunks, media prácticamente sin cambios (704 -> 710,5
+caracteres), mínimo 51 caracteres.
+
+**Lote intermedio de 16 PDF, elegidos a propósito (no al azar) --
+criterios cumplidos:** (1) al menos un caso de los "22 multi-sustancia
+sin ADI" -- celulosas E460-469 (10 sustancias, todas tier 2); (2) al
+menos un título largo susceptible de partirse en dos bloques bold --
+tartratos E334-337+354, que además resultó ser uno de 8 casos, no 1;
+(3) variedad de tamaño de documento, de 5 a 157 páginas; más 2 casos
+tier 3 nunca antes probados con datos reales (Shellac, statement de
+sucralosa). `--pdf` de `scripts/build_chunk_index.py` ampliado para
+aceptar varios substrings separados por coma, para poder lanzar el
+lote entero en una sola llamada.
+
+**Resultado: 16 PDF, 4.753 chunks (tras el filtro de longitud mínima),
+sin ningún crash, sin ninguna fuga de tabla, sin ningún dossier sin
+sustancia resuelta más allá del 1/162 ya documentado como excluido por
+diseño.** Tier 1: tartratos (7 sustancias), nitritos (3, con el mismo
+filtro de compuestos N-nitroso funcionando correctamente), sorbatos (2),
+dimetilpolisiloxano, sulfitos (grupo con UN solo ADI de grupo, mismo
+patrón que fosfatos -- ver más abajo), luteína, acesulfamo K. Tier 2:
+celulosas (10), β-caroteno, tragacanto, 4-hexilresorcinol, TiO2 (sin
+ADI, esperado), silicatos de Na/K aluminio (2), eritritol. **Tier 3
+validado por primera vez con datos reales: Shellac y sucralosa
+(statement) resuelven correctamente por coincidencia de nombre en el
+título** -- cerraba un hueco de validación explícitamente pendiente de
+la sesión anterior.
+
+**Hallazgo nuevo, real, arreglado en esta sesión -- guiones suaves
+(U+00AD) incrustados literalmente en el texto extraído de los PDF más
+recientes.** Verificado: Shellac (2024) y Acesulfame K (2025) tienen el
+carácter en 198 y 474 bloques respectivamente (1.168 apariciones solo
+en el de acesulfamo -- esencialmente todo el documento); CERO en todos
+los PDF anteriores a 2024 comprobados (aspartamo 2013, cloruros 2019,
+TiO2 2021) -- cambio real de plantilla de Wiley, no un problema
+preexistente sin detectar. Sin arreglarlo, "Re-evaluation" salía como
+"Re-\xadevaluation" en el texto de cada chunk de estos documentos. Fix:
+`extract_raw_blocks` quita `\xad` del texto de cada bloque nada más
+extraerlo, antes de deduplicación/detección de encabezado/troceo.
+Verificado limpio tras el fix en ambos PDF afectados (0 apariciones
+restantes, títulos legibles).
+
+**Confirmado, a petición del usuario, NO arreglado a propósito --
+título largo partido en dos bloques bold:** el problema cosmético ya
+visto en cloruros/fosfatos resultó sistémico, no raro -- presente en 8
+de los 16 PDF de este lote (tartratos, nitritos, sorbatos, celulosas,
+dimetilpolisiloxano, sulfitos, silicatos, TiO2), todos de la plantilla
+EFSA/Wiley anterior a 2024. **Trade-off confirmado con el fix de
+guiones suaves de arriba:** los 2 PDF de la plantilla 2024+ (Shellac,
+Acesulfame K) NO tienen el problema de título partido -- su título
+largo se queda en un solo bloque pese a envolver 2 líneas -- pero sí
+tienen (tenían) el problema de guiones suaves. Ninguna plantilla es
+limpia en los dos frentes. Decisión del usuario: documentar como
+limitación conocida de baja prioridad en CLAUDE.md, no arreglar ahora
+-- solo afecta la etiqueta `section_heading` de un puñado de chunks al
+inicio del documento, sin pérdida de datos, confirmado dos veces.
+También documentado, sin investigar más: el statement de luteína
+produjo un par de encabezados de sección raros ("level*", "reported
+use"), misma clase de imprecisión cosmética (probablemente fragmentos
+de leyenda/subtítulo en negrita fuera del bbox de tabla detectado).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El corpus completo (161 PDF) sigue sin procesarse -- 22 PDF
+  validados hasta ahora (6 + 16), sin bloqueantes encontrados.
+- El paso de indexado en Chroma (embeddings + `chromadb`) sigue sin
+  empezar.
+- Título partido en dos bloques bold: limitación conocida, no
+  arreglada a propósito (ver CLAUDE.md).
+- Encabezados raros del statement de luteína: anotados, no
+  investigados a fondo.
+- Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
+  sesión.
+
+## 2026-08-18 (continuación) — Corpus completo procesado (161/161), persistido a disco, alcance real del bug de guiones suaves corregido
+
+**Contexto:** con el lote de 22 PDF validado sin bloqueantes, se pidió
+procesar los 161 PDF completos -- por lotes con progreso visible, no en
+una sola llamada silenciosa, parando y reportando si aparecía algún
+error nuevo en vez de saltarlo. Antes de eso, dos verificaciones
+pedidas explícitamente: (1) confirmar que el bug de guiones suaves no
+aparece en ningún PDF fuera de los 2 ya encontrados, y (2) persistir el
+resultado a disco antes de tocar embeddings, para no tener que
+reprocesar los 161 PDF si el siguiente paso falla a mitad.
+
+**Implementado en `scripts/build_chunk_index.py`:**
+- `--all`: procesa los 161 dossiers en lotes de `BATCH_SIZE=20`, una
+  línea corta por PDF (no el detalle completo de `--dry-run`/`--pdf`,
+  inmanejable 161 veces) + un marcador `=== LOTE N/9 completo ===` al
+  cierre de cada lote + un `=== RESUMEN FINAL ===` con total de chunks,
+  distribución de sustancias por tier, PDF con 0 chunks y PDF sin
+  ninguna sustancia resuelta. **Si un PDF concreto lanza una excepción
+  no esperada, el script para inmediatamente (`sys.exit(1)`,
+  traceback completo) -- no la traga ni sigue con el siguiente.**
+- `--save-jsonl <ruta>`: persiste una línea JSON por (chunk, sustancia
+  resuelta) -- mismos campos que `RetrievedChunk` más `pdf_filename` y
+  `chunk_group_id` (nuevo, solo en la persistencia -- id compartido
+  entre las N copias del mismo chunk, el esquema "N copias por chunk"
+  ya diseñado en CLAUDE.md para Chroma). Escrito y `flush()` tras CADA
+  dossier, no al final -- un fallo a mitad de la corrida deja intacto
+  todo lo ya escrito.
+- `--pdf` ampliado (ya en la sesión anterior) para aceptar varios
+  substrings separados por coma.
+- Lanzado con `Monitor` filtrando por los marcadores de lote/resumen/
+  error (no por cada línea de PDF, serían 161 notificaciones) -- 9
+  eventos de progreso + 1 resumen final, en vez de una espera ciega.
+
+**Verificación 1 -- alcance real del bug de guiones suaves, CIFRA
+CORREGIDA:** un escaneo del texto CRUDO (antes del fix, `page.get_text
+("blocks")` directo) sobre los 161 PDF encontró **10 PDF afectados, no
+2** -- el lote de 22 solo había incluido 2 por azar de la selección:
+E1204 (2025, 310 apariciones), E174 (2025, 561), E472C (2025, 584),
+E551 (2024, 919), E904/Shellac (2024, 463 -- ya conocido), E943A-E943B-
+E944 (2025, 171), E950/Acesulfame K (2025, 1.357 -- ya conocido),
+E954/sacarina (2024, 1.749), E961/neotamo (2025, 1.250), E968 (2023,
+solo 8). Todos 2023-2025, cero en cualquier PDF anterior comprobado --
+confirma que es un cambio de plantilla real, con un límite de fecha
+más amplio de lo que se había visto (2023, no solo 2024+). **El fix ya
+implementado en la sesión anterior es genérico (no específico de
+ningún PDF) -- cubre los 10 sin tocar código**, verificado
+explícitamente: 0 apariciones restantes en cada uno de los 10 tras
+re-extraer con el fix aplicado.
+
+**Hallazgo colateral, no buscado, mientras se investigaba el alcance
+del bug anterior:** al usar la API de `pymupdf.TOOLS.mupdf_warnings()`
+(la única forma de capturar los avisos de la librería MuPDF -- no
+salen por `sys.stderr` de Python) para identificar qué PDF disparaba un
+warning puntual ("No default Layer config", resultó ser
+`E128_10.2903_j.efsa.2007.515.pdf` -- el mismo Red 2G ya señalado en
+sesiones anteriores como caso a vigilar por sus tablas de BMDL/tumores,
+coincidencia anotada pero no investigada más), se encontraron avisos de
+MuPDF en la mayoría de los 161 PDF -- la mayoría benignos y ya
+esperables para PDF con fuentes incrustadas/subseteadas ("freetype
+could not find any cmaps", "repaired broken tree structure in
+outline", "bogus font ascent/descent values"). **Uno más serio, nuevo,
+no visto hasta ahora: "ActualText with no position. Text may be lost
+or mispositioned."** -- aparece en los MISMOS 7 de los 10 PDF del
+hallazgo de guiones suaves (E1204, E174-2025, E472C, E943A-E943B-E944,
+E950, E961, E968-2023), 9-33 apariciones cada uno. Spot-check (solo 1
+de los 7, Acesulfame K): el aviso solo sale en las páginas 1-2
+(portada/lista de autores), no en el resto del documento (3-74), y la
+densidad de caracteres extraídos por página (5.467 de media) no
+muestra ninguna zona anómala -- consistente con que sea ruido de
+etiquetas de accesibilidad en el membrete con espaciado de letras ya
+visto ("S C I E N T I F I C O P I N I O N"), no pérdida de contenido
+narrativo real. **NO verificado de forma rigurosa en los otros 6 PDF
+afectados** -- anotado en CLAUDE.md como algo a revisar primero si
+aparece contenido con lagunas raras en QA del Nodo 4 para cualquiera de
+estos 7 documentos.
+
+**Verificación 2 -- corpus completo procesado y persistido:**
+`python scripts/build_chunk_index.py --all --save-jsonl
+data/processed/chunks.jsonl` -- **161/161 dossiers, sin errores, sin
+ningún PDF con 0 chunks, 35.991 chunks, 67.827 RetrievedChunk**.
+Distribución de sustancias resueltas por tier (256 pares dossier-
+sustancia): tier 1 = 105, tier 2 = 149, tier 3 = 2 (exactamente los 2
+casos conocidos, Shellac y sucralosa statement -- ningún tier 3 nuevo
+inesperado en todo el corpus). Un solo dossier sin sustancia resuelta,
+el mismo 1/162 ya documentado (`sinE_10.2903_j.efsa.2011.1996.pdf`).
+Cifras IDÉNTICAS a una corrida previa sin persistir (lanzada antes de
+aplicar el fix ampliado a los 10 PDF -- confirma que quitar `\xad` no
+cambia el número de chunks de forma perceptible, solo limpia el
+texto).
+
+**`data/processed/chunks.jsonl` verificado tras escribirse:** 67.827
+líneas (coincide exacto con el total reportado), 85 MB, 160 dossiers
+únicos representados (161 procesados menos el 1 sin sustancia
+resuelta, que no aporta ninguna fila), recuento de tiers a nivel de
+FILA (no de par dossier-sustancia): tier 1 = 29.782, tier 2 = 37.699,
+tier 3 = 346 -- **346 coincide exacto con la suma de chunks de los 2
+dossiers tier 3** (270 Shellac + 76 sucralosa statement), comprobación
+de consistencia interna en verde. Ya está en `.gitignore`
+(`data/processed/`), mismo motivo de licencia que `data/chroma/` --
+texto literal de los PDF, ver la decisión de licencia en CLAUDE.md.
+
+**CLAUDE.md actualizado:** cifra de guiones suaves corregida de 2 a 10
+PDF (con la lista completa), nuevo hallazgo de `ActualText` documentado
+sin investigar más, resumen del corpus completo + ubicación del JSONL
+añadidos al pendiente #5 de "Estado del código".
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El aviso `ActualText`/posible pérdida de texto: spot-check solo en 1
+  de los 7 PDF afectados, no confirmado en los otros 6. No bloqueante
+  (evidencia disponible apunta a ruido de portada, no a contenido
+  narrativo perdido), pero anotado para revisar si aparece algo raro
+  en QA del Nodo 4.
+- El paso de indexado en Chroma (embeddings + `chromadb`) sigue sin
+  empezar -- `data/processed/chunks.jsonl` es el material de partida
+  para ese paso, ya persistido y verificado.
+- Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
+  sesión.
+
+## 2026-08-18 (continuación 2) — Investigación completa del aviso ActualText en los 7 PDF afectados, cerrado sin pérdida de texto
+
+**Contexto:** la sesión anterior dejó pendiente verificar el aviso de
+MuPDF "ActualText with no position. Text may be lost or mispositioned"
+en los 6 PDF que no se habían comprobado (solo se hizo spot-check de
+Acesulfame K). Se pidió el mismo criterio en los 6 restantes: ¿se
+limita a portada/membrete, o aparece en páginas de contenido real
+(Discussion, resultados)? Si aparece en contenido real, identificar
+cuál antes de seguir.
+
+**Metodología:** para cada uno de los 6 PDF restantes (E1204, E174,
+E472C, E943A-E943B-E944, E961, E968), se identificaron con
+`pymupdf.TOOLS.mupdf_warnings()` las páginas EXACTAS donde salta el
+aviso, se inspeccionó qué contenido hay en cada página, y para
+cualquier página con contenido narrativo real (no portada/TOC/tabla de
+apéndice) se leyó el TEXTO COMPLETO extraído buscando corrupción real
+(frases cortadas, repeticiones, incoherencia) -- no solo densidad de
+caracteres, que es un proxy más débil.
+
+**Resultado: el patrón NO es "solo portada" en todos los casos, pero la
+pregunta de fondo (¿se pierde texto?) se resuelve en NO para los 7.**
+- E1204/pullulan y E472C/E943-E944: solo portada/CONTENTS/tabla de
+  contenidos/tablas de apéndice -- ningún contenido narrativo marcado.
+- E961/neotamo: portada + páginas 57-62, TODAS dentro de un apéndice de
+  tablas (BMD/QSAR) -- verificada directamente la página 57 (marcada
+  "sospechosa" por baja densidad de caracteres): es literalmente una
+  tabla de datos QSAR, la baja densidad es esperable en una tabla, no
+  pérdida -- y ese contenido se excluye igualmente del texto narrativo
+  por Opción A.
+- **E174/plata SÍ marca páginas de contenido narrativo real (12, 15,
+  16) -- incluida la propia Sección 4 "DISCUSSION" completa.** Leído el
+  texto íntegro de las 3 páginas: coherente, sin frases cortadas, sin
+  repeticiones, con notas al pie y citas en su sitio.
+- **E968/eritritol SÍ marca la página 41, Secciones 6 "CONCLUSIONS" y 7
+  "RECOMMENDATION"** (incluye el ADI de 0,5 g/kg pc/día). Leído
+  íntegro: coherente y completo.
+
+**Conclusión, documentada en CLAUDE.md, caso CERRADO:** el aviso de
+MuPDF no se traduce en pérdida de texto real en ninguno de los 7 PDF,
+ni siquiera en las 2 páginas donde coincide con Discussion/Conclusions
+reales -- probablemente lo dispara otro elemento con estilo especial en
+esa misma página (nota al pie, subíndice, cabecera repetida) sin
+afectar la prosa principal. No requiere exclusión de chunk ni revisión
+manual. No reabrir sin evidencia nueva de contenido realmente perdido.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Ninguno relacionado con este hallazgo -- cerrado.
+- El paso de indexado en Chroma (embeddings + `chromadb`) sigue sin
+  empezar -- sigue siendo el siguiente paso lógico, ahora sin ningún
+  hallazgo de calidad de texto pendiente de verificar.
+- Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
+  sesión.
