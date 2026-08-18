@@ -158,8 +158,29 @@ def _render_answer(query: str) -> None:
     """Import perezoso -- `efsa_rag.graph.build` carga Chroma, el modelo
     de embeddings y el cliente LLM (cacheados a nivel de módulo por
     `answer_question`, ver graph/build.py). No se paga ese coste hasta
-    que se envía la primera consulta, no al arrancar la app."""
+    que se envía la primera consulta, no al arrancar la app.
+
+    Antes de tocar `graph.build` (que es lo primero que intenta abrir
+    `data/chroma/` y leer el xlsx de OpenFoodTox), se asegura que esos
+    dos artefactos existen en disco -- en el deploy real no van en el
+    repo de git (ver `efsa_rag.deploy_assets`, y CLAUDE.md/PROGRESS.md
+    sesión 18-ago-2026 continuación 21 para el motivo de licencia), así
+    que la primera consulta real del contenedor los descarga desde
+    MEGA S4. En desarrollo local, si ya están en disco, esta llamada no
+    toca la red en absoluto."""
+    from efsa_rag.deploy_assets import ensure_deploy_assets_downloaded
     from efsa_rag.graph.build import answer_question
+
+    try:
+        with st.spinner("Preparando datos (primera consulta tras un reinicio)..."):
+            ensure_deploy_assets_downloaded()
+    except Exception:
+        st.error(
+            "No se pudieron descargar los datos necesarios para responder -- "
+            "es un fallo de configuración del servicio, no de tu pregunta. "
+            "Inténtalo de nuevo más tarde."
+        )
+        return
 
     with st.spinner("Consultando el dictamen EFSA vigente..."):
         try:

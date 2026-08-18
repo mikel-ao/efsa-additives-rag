@@ -252,6 +252,36 @@ un error.
     2016-2025) está pensada para el artículo completo sin cambios, no
     fragmentos. Si en el futuro se reabre esta decisión, hazlo con
     nueva evidencia de licencia, no por conveniencia de despliegue.
+  - **Mecanismo concreto para Streamlit Community Cloud -- datos
+    pesados del deploy vía MEGA S4, NUNCA en git (ni siquiera Git LFS
+    en un repo privado), sesión 18-ago-2026 continuación 21.** A
+    diferencia de un deploy Docker con imagen propia, Streamlit
+    Community Cloud despliega DIRECTAMENTE desde un repo de git -- no
+    hay un paso de "artefacto" separado del repo. La única forma de
+    cumplir el matiz de arriba ("SÍ en el artefacto, NO en el repo
+    público") sin meter los datos en ningún repo de GitHub es que la
+    propia app los descargue en tiempo de arranque desde
+    almacenamiento externo. Decisión del usuario: MEGA S4
+    (almacenamiento de objetos S3-compatible, incluido en su plan MEGA
+    Pro Lite) -- **NO Git LFS** (evaluado y descartado explícitamente
+    por el usuario: aunque Git LFS "funciona" con Streamlit Community
+    Cloud sin cambios de código, seguiría metiendo el texto con
+    licencia restrictiva en el historial de git, que es justo lo que
+    esta decisión prohíbe, repo privado o no).
+    - `src/efsa_rag/deploy_assets.py::ensure_deploy_assets_downloaded()`
+      -- descarga el xlsx y un tarball de `data/chroma/` vía boto3 SOLO
+      si no están ya en disco (no toca la red en desarrollo local con
+      los datos ya presentes, verificado). Credenciales/endpoint/bucket
+      SIEMPRE por variable de entorno (`MEGA_S4_*`, ver
+      `.env.example`), nunca hardcodeadas. Llamada desde
+      `ui/app.py::_render_answer`, justo antes de tocar `graph.build`.
+    - `scripts/upload_deploy_assets.py` -- script manual, un solo uso
+      por sesión de reindexado, que el usuario ejecuta EN LOCAL con sus
+      propias credenciales para poblar el bucket. No lo ejecuta Claude
+      (no tiene ni debe pedir las credenciales reales).
+    - Ver `README.md`, sección "Deploy en Streamlit Community Cloud",
+      para los pasos completos, y `PROGRESS.md` continuación 21 para el
+      detalle de la implementación y verificación.
 - **Candado de refresco de 24h** (`ui/app.py`, `LOCK_FILE`): protege
   cómputo del hosting, NO presupuesto de API (el botón no llama al LLM).
   Es un archivo server-side, no session_state — compartido por todos los
@@ -1178,34 +1208,69 @@ Pendiente, en orden de menor a mayor incertidumbre:
    sin probarse con un cliente MCP real (Claude Desktop u otro) -- solo
    `server.list_tools()`/`server.call_tool()` invocados directamente en
    Python, tanto en la sesión de implementación como en los tests.
-8. Deploy siguiendo la Opción A descrita arriba. **EN CURSO, NO
-   CERRADO -- plan de plataforma cambiado y memoria parcialmente
-   optimizada, sesión 18-ago-2026 (ver PROGRESS.md continuación 19
-   para el detalle completo):**
-   - Plan de plataforma cambiado de Streamlit Community Cloud a HF
-     Spaces (16 GB RAM, cubre con margen) -- pero **HF Spaces tiene su
-     propio bloqueo nuevo, no de memoria:** el SDK nativo `streamlit`
-     está deprecado (hay que usar `sdk: docker`), y `docker` en CPU
-     Basic dejó de ser gratuito en cuentas free hacia jul-2026 (sin
-     anuncio oficial, confirmado por foros de HF) -- requeriría PRO,
-     $9/mes. **Pendiente que el usuario lo verifique él mismo** (no
-     hay navegador conectado en esta sesión para comprobarlo, y crear
-     una cuenta requiere verificación por email que no se puede hacer
-     por él) -- pasos exactos dados en PROGRESS.md.
+8. Deploy siguiendo la Opción A descrita arriba, en **Streamlit
+   Community Cloud -- este ha sido el plan activo en TODO momento, no
+   ha cambiado nunca.** **CORRECCIÓN (sesión 18-ago-2026, continuación
+   21):** una versión anterior de esta entrada afirmó que el plan
+   "cambió"/"pivotó" a HF Spaces -- eso era incorrecto, un error de
+   redacción de Claude que el usuario corrigió directamente. HF Spaces
+   solo se INVESTIGÓ como alternativa posible (motivado por el bloqueo
+   de memoria medido en continuación 18), nunca se adoptó. Ver
+   PROGRESS.md, continuaciones 19-21, para el detalle completo
+   (incluida la corrección explícita in situ en la propia continuación
+   19). **EN CURSO, NO CERRADO -- memoria parcialmente optimizada,
+   repo preparado para un primer intento de deploy real, ese intento
+   todavía no se ha hecho:**
    - Backend de embeddings cambiado a ONNX int8 (ver el bullet
      correspondiente en "Decisiones de arquitectura ya tomadas") --
      reduce el consumo medido de 1.870 MB a ~1.214 MB (combinado con
-     `torch` CPU-only) -- **sigue ~190 MB por encima del límite de 1 GB
-     de Streamlit Community Cloud**, así que esta optimización por sí
-     sola NO basta si se vuelve a esa plataforma; si el destino final
-     es HF Spaces (16 GB), el problema de memoria ya está resuelto de
-     sobra sin necesitar ninguna optimización más.
-   - `torch` CPU-only (en vez de CUDA) NO se ha dejado instalado en el
-     venv de desarrollo -- sigue con el build CUDA (útil para
-     reindexados locales). Si el deploy final necesita CPU-only,
-     pendiente decidir cómo gestionar esa diferencia entre entorno de
-     desarrollo y producción (`requirements.txt` distinto, extra
-     opcional...) -- no resuelto.
+     `torch` CPU-only).
+   - **`usecols` añadido a las 5 hojas de `OpenFoodToxStore` (sesión
+     18-ago-2026, continuación 20) -- palanca de memoria adicional,
+     medida sobre el pipeline completo, no solo sobre la carga del
+     xlsx aislada.** Reduce el consumo medido de ~1.214 MB a
+     **~1.150-1.170 MB** (2 corridas, mismo método de medición que las
+     cifras anteriores) -- ahorro real de ~44-64 MB. **SIGUE ~126-145
+     MB (12-14%) por encima del límite de ~1 GB de Streamlit Community
+     Cloud** -- riesgo real y sin cerrar de cara al primer deploy.
+     Investigada una palanca adicional (reescribir el pipeline de
+     embeddings sobre ONNX Runtime directo, sin la capa de
+     `sentence-transformers`) -- **el usuario decidió explícitamente NO
+     implementarla todavía**, prefiriendo intentar el deploy real
+     primero y observar el comportamiento empírico. Detalle completo
+     de la auditoría de columnas (verificada contra cada caller real,
+     no adivinada) y de la medición en `PROGRESS.md`, continuación 20.
+   - **`requirements.txt` fija `torch==2.13.0+cpu` explícitamente**
+     (vía `--extra-index-url https://download.pytorch.org/whl/cpu`,
+     sesión 18-ago-2026, continuación 20) -- para que un `pip install
+     -r requirements.txt` limpio en el host de deploy instale la
+     versión ligera por defecto, sin depender de que alguien lo
+     recuerde a mano. **El venv de desarrollo local SIGUE con el build
+     CUDA** (`2.13.0+cu130`, instalado a mano, útil para reindexados
+     rápidos) -- este pin de `requirements.txt` no lo cambia
+     automáticamente; solo un entorno nuevo instalado desde cero (como
+     el deploy) se lleva el build CPU-only. Con esto, el punto
+     pendiente de "cómo gestionar la diferencia dev(GPU)/prod(CPU)" de
+     la entrada anterior queda resuelto: `requirements.txt` es la
+     única fuente, prod la sigue al pie de la letra, dev se desvía a
+     propósito y a mano.
+   - **Repo preparado para el primer intento de deploy real (sesión
+     18-ago-2026, continuación 21) -- ver la nueva decisión de
+     arquitectura "Datos pesados del deploy vía MEGA S4, nunca en git"
+     más abajo, y `README.md` sección "Deploy en Streamlit Community
+     Cloud" para los pasos exactos.** `src/efsa_rag/deploy_assets.py`
+     (descarga xlsx + índice de Chroma desde MEGA S4 en el arranque,
+     solo si no están ya en disco) +
+     `scripts/upload_deploy_assets.py` (sube ambos, manual, un uso, con
+     las credenciales del usuario) + `ui/app.py` conectado a esa
+     descarga antes de tocar `graph.build`. La subida real a MEGA S4 y
+     el primer deploy en share.streamlit.io quedan pendientes de que
+     el usuario los haga desde su propia cuenta -- fuera del alcance de
+     lo que Claude puede ejecutar (credenciales/cuenta del usuario).
+     **El riesgo de memoria de arriba (~126-145 MB sobre el límite)
+     sigue sin resolver** -- el primer deploy real puede fallar por OOM
+     en la primera consulta; eso es un resultado esperado a día de
+     hoy, no una sorpresa si ocurre.
 9. **Re-probar el Nodo 4 con llamada real a la API usando el prompt
    actual -- PARCIALMENTE HECHO (sesión 18-ago-2026, continuación 10),
    no cerrar del todo.** `answer_question(...)` de extremo a extremo

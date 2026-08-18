@@ -164,6 +164,58 @@ TOXREF_LINK_DOCUMENT_TYPES = ("FLEXIBLE_SUMMARY", "ToxRefValues")
 DISCUSSION_COLUMN = "Discussion.Discussion"
 ENDPOINT_SUMMARY_DOCUMENT_TYPE = "ENDPOINT_SUMMARY"
 
+# Optimización de memoria (sesión 18-ago-2026, continuación 20): cada hoja
+# del xlsx trae muchas más columnas de las que este módulo (o cualquier
+# caller externo verificado) llega a leer -- cargarlas todas con
+# pd.read_excel() sin usecols retiene esas columnas sobrantes en memoria
+# durante toda la vida del proceso (las propiedades son
+# functools.cached_property, no se liberan hasta que el store muere).
+#
+# Estas listas se derivaron por AUDITORÍA EXPLÍCITA, no por adivinanza:
+# grep de cada acceso `df["..."]` / `df[...]` a las 5 hojas dentro de
+# ingestion/openfoodtox.py, MÁS los callers externos que tocan las mismas
+# hojas directamente vía las propiedades públicas (store.dossier,
+# store.dossier_docs, store.sub, store.flex_sum_toxref) --
+# scripts/generate_pdf_checklist.py, ingestion/pdf_chunking.py
+# (incluida _guess_substance_by_title, el camino de resolución de nivel 3
+# -- la rama menos obvia, con su propio acceso a SUB.ChemicalName/
+# Document UUID) y tests/test_openfoodtox_joins.py (los 2 tests-canario
+# que comprueban que ADI_*_COLUMN/DISCUSSION_COLUMN siguen existiendo en
+# la hoja real). Ningún caller adicional accede a estas hojas por fuera
+# de esos módulos (verificado con grep sobre todo el repo antes de fijar
+# estas listas). Si se añade un caller nuevo que necesite otra columna,
+# ampliar la lista correspondiente aquí -- un KeyError al leer sería la
+# señal de que se olvidó.
+DOSSIER_USECOLS = [
+    "Document UUID",
+    "Domain.FoodDomain",
+    "Domain.Regulation",
+    "LiteratureReference.EFSAOutputTitle",
+    "LiteratureReference.Type",
+    "LiteratureReference.DateOfEvaluation",
+    "LiteratureReference.LinkToPersistentIdentifier",
+]
+DOSSIER_DOCS_USECOLS = [
+    "DOSSIER UUID",
+    "DOCUMENT UUID",
+    "DOCUMENT TYPE",
+]
+SUB_USECOLS = [
+    "Document UUID",
+    "ChemicalName",
+]
+FLEX_SUM_TOXREF_USECOLS = [
+    "Document UUID",
+    "Parent UUID",
+    ADI_LOWER_VALUE_COLUMN,
+    ADI_UNIT_COLUMN,
+    ADI_JUSTIFICATION_COLUMN,
+]
+END_SUM_USECOLS = [
+    "Document UUID",
+    DISCUSSION_COLUMN,
+]
+
 # Heurístico de boilerplate validado sin excepciones encontradas en sesión
 # (ver CLAUDE.md, "Hallazgos verificados"): por debajo de este umbral, el
 # texto es siempre la frase de apertura del mandato sin contenido
@@ -251,23 +303,34 @@ class OpenFoodToxStore:
 
     @functools.cached_property
     def dossier(self) -> pd.DataFrame:
-        return pd.read_excel(self.xlsx_path, sheet_name="DOSSIER", header=0)
+        return pd.read_excel(
+            self.xlsx_path, sheet_name="DOSSIER", header=0, usecols=DOSSIER_USECOLS
+        )
 
     @functools.cached_property
     def dossier_docs(self) -> pd.DataFrame:
-        return pd.read_excel(self.xlsx_path, sheet_name="DOSSIER_DOCS", header=0)
+        return pd.read_excel(
+            self.xlsx_path, sheet_name="DOSSIER_DOCS", header=0, usecols=DOSSIER_DOCS_USECOLS
+        )
 
     @functools.cached_property
     def sub(self) -> pd.DataFrame:
-        return pd.read_excel(self.xlsx_path, sheet_name="SUB", header=0)
+        return pd.read_excel(self.xlsx_path, sheet_name="SUB", header=0, usecols=SUB_USECOLS)
 
     @functools.cached_property
     def flex_sum_toxref(self) -> pd.DataFrame:
-        return pd.read_excel(self.xlsx_path, sheet_name="FLEX_SUM.ToxRefValues", header=0)
+        return pd.read_excel(
+            self.xlsx_path,
+            sheet_name="FLEX_SUM.ToxRefValues",
+            header=0,
+            usecols=FLEX_SUM_TOXREF_USECOLS,
+        )
 
     @functools.cached_property
     def end_sum(self) -> pd.DataFrame:
-        return pd.read_excel(self.xlsx_path, sheet_name="END_SUM", header=0)
+        return pd.read_excel(
+            self.xlsx_path, sheet_name="END_SUM", header=0, usecols=END_SUM_USECOLS
+        )
 
     # ------------------------------------------------------------------ #
     # Filtro de corpus (aditivos en reevaluación bajo el Reglamento 257/2010)

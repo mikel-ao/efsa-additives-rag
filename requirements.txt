@@ -12,6 +12,24 @@ pypdf>=4.3
 # decidido con evidencia sobre PyPDFLoader (0 vs 402 palabras rotas en
 # el PDF de fosfatos, ~8x más rápido), ver CLAUDE.md.
 pymupdf>=1.28
+# torch CPU-only explícito (sesión 18-ago-2026, continuación 20) -- sin
+# esto, `pip install torch` en un host Linux normal resuelve el build
+# con CUDA por defecto (arrastra los paquetes nvidia-*-cu12, mucho más
+# pesado en descarga/instalación/RAM que la reducción medida de ONNX
+# int8 por sí sola no compensa, ver CLAUDE.md "Backend de embeddings:
+# ONNX int8, no torch"). Fijado aquí para que el deploy real en la nube
+# instale la versión ligera SIN depender de que alguien lo recuerde a
+# mano en cada entorno nuevo. Versión (2.13.0) elegida por ser la que
+# ya está validada en el venv de desarrollo (build CUDA) -- confirmado
+# que download.pytorch.org/whl/cpu publica el mismo 2.13.0+cpu. El
+# sufijo de versión local "+cpu" es lo que fuerza a pip a resolver
+# desde este índice y no desde el build CUDA por defecto de PyPI.
+# NOTA -- el venv de desarrollo LOCAL sigue con el build CUDA instalado
+# a mano (útil para reindexados rápidos, ver CLAUDE.md) y no se
+# reinstala solo por este pin; solo un `pip install -r requirements.txt`
+# limpio (como el que corre el deploy) se lleva el build CPU-only.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
 # extra [onnx] -- añade optimum + onnxruntime, necesarios para
 # ingestion/embedding_model.py (backend ONNX + pesos int8, decisión de
 # memoria del deploy, sesión 18-ago-2026) -- torch sigue siendo
@@ -36,6 +54,13 @@ mcp>=2.0
 
 # UI
 streamlit>=1.38
+
+# Descarga de artefactos de deploy (xlsx + índice de Chroma) desde
+# MEGA S4 en el arranque -- ver efsa_rag/deploy_assets.py y
+# scripts/upload_deploy_assets.py. Los datos NUNCA van en git (ni
+# siquiera vía Git LFS en un repo privado), por la licencia de los
+# PDFs -- ver CLAUDE.md/PROGRESS.md, sesión 18-ago-2026 continuación 21.
+boto3>=1.34
 
 # dev
 pytest>=8.0

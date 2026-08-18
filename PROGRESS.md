@@ -3087,22 +3087,32 @@ de la sesión de `AppTest`) borrado -- se regenera limpio con
 varios turnos de investigación e implementación real, resumidos aquí
 en una sola entrada:
 
-**1. Cambio de plan de deploy (decisión del usuario, sin código):** en
-vez de Streamlit Community Cloud, HF Spaces (CPU Basic, 16 GB RAM --
-cubre los 1.870 MB con margen amplio, sin necesitar optimizar memoria
-por sí solo). Se investigó el mecanismo real de deploy (README.md YAML,
-Dockerfile, secrets, empaquetado de Chroma vía git-lfs o Dataset repo)
--- **hallazgo crítico: el SDK nativo `streamlit` está deprecado desde
-30-abr-2025 (hay que usar `sdk: docker`), y el SDK `docker` en CPU
-Basic dejó de ser gratuito en cuentas free hacia el 8-24 jul-2026 (sin
-anuncio oficial, confirmado por múltiples hilos del foro de HF, afecta
-también a cuentas ya existentes)** -- requeriría HF PRO, $9/mes. Se
-pidió verificar esto creando una cuenta y probando el flujo de
-creación de un Space -- **no se pudo completar**: no hay herramienta de
-navegador conectada en esta sesión, y crear una cuenta requiere
-verificación por email que no se puede hacer por el usuario. Quedó
-pendiente de que el usuario lo verifique él mismo (pasos exactos dados
-en el turno correspondiente).
+**1. HF Spaces investigado como alternativa de plataforma -- NUNCA
+adoptado como plan activo, corregido en sesión 18-ago-2026 continuación
+21 tras una afirmación incorrecta de Claude en esta misma entrada y en
+la continuación 20.** Lo que sigue describe la INVESTIGACIÓN hecha en
+su momento, no una decisión tomada -- **Streamlit Community Cloud
+siguió siendo el plan de deploy activo todo este tiempo**, el usuario
+nunca lo cambió. Se investigó HF Spaces (CPU Basic, 16 GB RAM -- cubre
+los 1.870 MB con margen amplio, sin necesitar optimizar memoria por sí
+solo) como posible alternativa si Streamlit Community Cloud resultaba
+inviable por memoria. Se investigó el mecanismo real de deploy en HF
+Spaces (README.md YAML, Dockerfile, secrets, empaquetado de Chroma vía
+git-lfs o Dataset repo) -- **hallazgo: el SDK nativo `streamlit` está
+deprecado desde 30-abr-2025 (hay que usar `sdk: docker`), y el SDK
+`docker` en CPU Basic dejó de ser gratuito en cuentas free hacia el
+8-24 jul-2026 (sin anuncio oficial, confirmado por múltiples hilos del
+foro de HF, afecta también a cuentas ya existentes)** -- requeriría HF
+PRO, $9/mes. Esto hace a HF Spaces bastante menos atractivo de lo que
+parecía a primera vista, y es una de las razones por las que el plan
+NUNCA se cambió en la práctica -- la otra parte de la corrección es que
+Claude, en esta misma entrada y en la continuación 20, escribió "plan
+de plataforma cambiado"/"pivotó a HF Spaces" como si fuera un hecho ya
+decidido, cuando en realidad solo se había investigado como
+alternativa. Ver la continuación 21 para la corrección completa y el
+motivo por el que salió a la luz (el usuario lo señaló directamente al
+pedir preparar el repo para un deploy real en Streamlit Community
+Cloud).
 
 **2. Investigación ONNX Runtime como backend alternativo a `torch`,
 pedida explícitamente antes de comprometerse a tocar el pipeline:**
@@ -3217,3 +3227,300 @@ estaba optimizando.
 - Detección de ambigüedad en el Nodo 3, servidor MCP (transporte stdio
   real), mejora de retrieval del Nodo 2, verificación manual de HF
   Spaces: sin cambios/resolver esta sesión.
+
+## 2026-08-18 (continuación 20) — `usecols` en OpenFoodToxStore; requirements.txt fija torch CPU-only; memoria re-medida: ~1.150-1.170 MB, sigue sobre 1 GB pero -60 MB
+
+**Contexto:** siguiente palanca de memoria pendiente de la continuación
+19 (que dejó el pipeline en 1.213,6 MB, ~190 MB sobre el límite de 1 GB
+de Streamlit Community Cloud) -- las 5 hojas de `OpenFoodToxStore` se
+cargaban completas con `pd.read_excel(..., header=0)`, reteniendo en
+memoria muchas más columnas de las que el código llega a leer, durante
+toda la vida del proceso (son `functools.cached_property`, no se
+liberan).
+
+**1. `usecols` implementado en las 5 hojas
+(`src/efsa_rag/ingestion/openfoodtox.py`), por auditoría explícita, no
+adivinada.** Antes de tocar código: `grep` de cada acceso `df["..."]` a
+las 5 hojas dentro del propio módulo, MÁS los callers externos que
+tocan las mismas hojas directamente vía las propiedades públicas
+(`store.dossier`/`store.dossier_docs`/`store.sub`/`store.flex_sum_toxref`)
+-- `scripts/generate_pdf_checklist.py`,
+`ingestion/pdf_chunking.py` (incluida `_guess_substance_by_title`, el
+camino de resolución de NIVEL 3 -- la rama menos obvia, con su propio
+acceso a `SUB.ChemicalName`/`Document UUID`, señalada explícitamente
+por el usuario como caso a no pasar por alto) y
+`tests/test_openfoodtox_joins.py` (los 2 tests-canario que comprueban
+que `ADI_*_COLUMN`/`DISCUSSION_COLUMN` siguen existiendo en la hoja
+real). Verificado con `grep` sobre todo el repo que ningún otro caller
+toca estas hojas por fuera de esos módulos.
+
+- Nuevas constantes `DOSSIER_USECOLS` (7 columnas: `Document UUID`,
+  `Domain.FoodDomain`, `Domain.Regulation`,
+  `LiteratureReference.EFSAOutputTitle`, `LiteratureReference.Type`,
+  `LiteratureReference.DateOfEvaluation`,
+  `LiteratureReference.LinkToPersistentIdentifier`),
+  `DOSSIER_DOCS_USECOLS` (3: `DOSSIER UUID`, `DOCUMENT UUID`,
+  `DOCUMENT TYPE`), `SUB_USECOLS` (2: `Document UUID`,
+  `ChemicalName`), `FLEX_SUM_TOXREF_USECOLS` (5: `Document UUID`,
+  `Parent UUID` + los 3 `ADI_*_COLUMN` ya existentes),
+  `END_SUM_USECOLS` (2: `Document UUID`, `DISCUSSION_COLUMN`).
+- Las 5 `cached_property` (`dossier`, `dossier_docs`, `sub`,
+  `flex_sum_toxref`, `end_sum`) pasan `usecols=` a `pd.read_excel`.
+
+**2. Verificación, en dos capas, no solo "los tests pasan":**
+- Suite completa contra el xlsx real: **30 passed, 2 skipped**
+  (mismos 2 de siempre, `DEEPSEEK_API_KEY`) -- incluye explícitamente
+  los tests de `require_adi=False` (nitritos/tartratos/glutamatos,
+  Nivel 2) y los 2 tests-canario de columnas.
+- **`_guess_substance_by_title` (Nivel 3, el camino que el usuario
+  pidió no dar por sentado) probado a mano fuera de la suite**, caso
+  Shellac: `resolve_dossier_substances(...)` sigue devolviendo
+  `[('Shellac', tier=3)]` -- confirma que `SUB_USECOLS` no rompió esta
+  rama.
+- **`scripts/generate_pdf_checklist.py` re-ejecutado contra el xlsx
+  real** (el otro caller externo con más superficie de columnas,
+  `dossier_docs`+`sub`+`flex_sum_toxref`+`dossier` a la vez): salida
+  (`data/pdf_download_checklist.csv`/`.md`, 161 filas) **byte-idéntica
+  a la ya versionada en git** (`git diff --stat` vacío tras
+  regenerar) -- confirma que ninguna columna necesaria quedó fuera.
+
+**3. `requirements.txt` -- torch CPU-only fijado explícitamente
+(pedido por el usuario a mitad de turno, no derivado de la medición de
+memoria de esta sesión):** `--extra-index-url
+https://download.pytorch.org/whl/cpu` + `torch==2.13.0+cpu` añadido
+ANTES de la línea `sentence-transformers[onnx]>=3.0` (mismo
+requirements.txt, mismo `pip install` -- el pin explícito de torch se
+unifica con la resolución del extra `[onnx]`, que de otro modo tira de
+torch sin restricción y resolvería al build CUDA por defecto de PyPI).
+Versión `2.13.0` elegida porque es la que ya estaba instalada en el
+venv de desarrollo (build CUDA, `2.13.0+cu130`) -- confirmado con `pip
+index versions torch --index-url https://download.pytorch.org/whl/cpu`
+que existe el build `2.13.0+cpu` correspondiente antes de fijarlo.
+Motivo del pin: sin él, un `pip install -r requirements.txt` limpio en
+el host de deploy resuelve el build con CUDA por defecto (arrastra
+`nvidia-*-cu12`, mucho más pesado) -- exactamente el problema que la
+continuación 19 tuvo que mitigar manualmente instalando CPU-only solo
+para medir, y luego revirtiendo. Con este pin, el deploy real no
+depende de que alguien lo recuerde a mano.
+**El venv de desarrollo local NO se deja en CPU-only** -- se instaló
+temporalmente para la medición del punto 4, y se restauró al build
+CUDA original al terminar (`pip install --force-reinstall --no-deps
+torch==2.13.0` no bastó por sí solo -- PEP 440 hace que `==2.13.0` sin
+segmento local siga matcheando el `+cpu` ya instalado y no reinstale
+nada; hizo falta `--force-reinstall` para que sí forzara la
+reinstalación del build CUDA por defecto de PyPI). Verificado
+`torch.__version__ == '2.13.0+cu130'` tras restaurar. Suite completa
+vuelta a correr tras restaurar: 30 passed, 2 skipped, sin
+regresiones.
+
+**4. Memoria del pipeline completo re-medida, mismo método que
+continuaciones 18/19** (proceso Python que importa `streamlit` +
+`build_default_deps()` + `build_graph()` + una consulta real de
+extremo a extremo, aspartamo, vía `/proc/self/status VmRSS`), con las
+TRES optimizaciones activas a la vez (torch CPU-only, ONNX int8,
+`usecols`):
+
+| Punto de medición | RSS |
+|---|---|
+| Proceso arrancado | ~9 MB |
+| Tras `import streamlit` | ~44,5 MB |
+| Tras importar `graph.build` (sin invocar nada) | ~157,5 MB |
+| **Tras `answer_question()` completo (1 consulta real)** | **~1.150-1.170 MB** (2 corridas: 1.149,9 y 1.169,0 MB) |
+
+Verificado que la consulta en sí siguió siendo correcta durante la
+medición (no solo que el proceso no petara): ADI = 40 mg/kg bw/día,
+unidad correcta, 5 `retrieved_chunks`, respuesta con el DOI/dictamen
+de 2013 correctos.
+
+**Cifra final pedida explícitamente por el usuario -- frente al límite
+de 1 GB (1.024 MB) de Streamlit Community Cloud: SIGUE POR ENCIMA,
+~126-145 MB (12-14%) sobre el límite** (bajó de los 1.213,6 MB de la
+continuación 19 a ~1.150-1.170 MB -- ahorro real de `usecols` de
+~44-64 MB, dentro de lo esperado para 5 hojas de un xlsx de 22,6 MB
+con bastantes columnas descartadas, no una solución completa por sí
+sola). La variación entre las dos corridas (~19 MB) es ruido normal
+(longitud de la respuesta del LLM, GC) -- no se ha investigado más
+allá de confirmar que ambas corridas están en el mismo orden de
+magnitud. **CONCLUSIÓN: el pipeline sigue sin caber en el tier
+gratuito de Streamlit Community Cloud tal como está hoy** -- y
+**Streamlit Community Cloud SIGUE siendo el destino de deploy activo**
+(corrección hecha en continuación 21: el párrafo original de esta
+entrada decía que el plan había "pivotado a HF Spaces", lo cual era
+incorrecto -- HF Spaces solo se investigó como alternativa, nunca se
+adoptó, ver la corrección completa en la entrada de la continuación 19
+y en la 21). Con Streamlit Community Cloud como destino real, el gap
+de ~126-145 MB sigue sin cerrar -- candidatos NO explorados todavía:
+revisar peso de `langchain`/`langgraph`, o algo más agresivo como
+servir el pipeline sin `sentence-transformers` (inference vía ONNX
+Runtime + tokenizer directo, sin la capa de `SentenceTransformer` --
+evaluado como posible palanca en la continuación 21, pero el usuario
+decidió NO implementarlo por ahora y en su lugar intentar el deploy
+real tal como está, para observar el comportamiento empírico en vez de
+seguir optimizando en el vacío).
+
+**Actualizado:** `CLAUDE.md` -- pendiente #8 con la cifra recalculada.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El gap de ~126-145 MB sobre 1 GB sigue sin cerrarse.
+- Resto de pendientes sin cambios esta sesión (detección de
+  ambigüedad Nodo 3, servidor MCP con transporte real, mejora de
+  retrieval Nodo 2, causa del +20% en disco de `data/chroma/` --
+  esto último SÍ se investigó y resolvió en la continuación 21, ver
+  esa entrada).
+
+## 2026-08-18 (continuación 21) — Corrección: Streamlit Community Cloud NUNCA dejó de ser el plan activo; causa del +20% en disco de Chroma encontrada y arreglada; preparación real del repo para el primer deploy (descarga de datos desde MEGA S4, sin git)
+
+**Corrección, pedida directamente por el usuario -- tratar con la
+misma seriedad que cualquier otro hallazgo, no como un simple typo:**
+las continuaciones 19 y 20 de este documento (y la sección
+correspondiente de `CLAUDE.md`, pendiente #8) afirmaban que el plan de
+deploy había "cambiado"/"pivotado" de Streamlit Community Cloud a HF
+Spaces. **Eso era incorrecto. El usuario nunca cambió el plan --
+Streamlit Community Cloud siguió siendo el destino activo todo este
+tiempo.** Lo que de verdad pasó en la continuación 19: HF Spaces se
+investigó como alternativa POSIBLE (motivada por el bloqueo de memoria
+de la continuación 18), se encontró que también tiene un bloqueo propio
+(SDK docker de pago en cuentas free desde jul-2026), y ahí quedó --
+nunca se ejecutó ningún cambio de plan real. Ambas entradas anteriores
+se han corregido in situ (bloques de corrección, mismo patrón que la
+corrección de la continuación 13 sobre el Nodo 4) en vez de reescribir
+la historia -- el error de redacción de Claude queda documentado, no
+borrado.
+
+**Además, a mitad de turno, el usuario detuvo una segunda dirección
+equivocada antes de que se ejecutara:** Claude había empezado a
+preparar `data/chroma/` y el xlsx para subirlos a git vía Git LFS (en
+un repo privado, para no violar la restricción de licencia de "no al
+repo público"). El usuario paró esto explícitamente: **la decisión ya
+tomada (ver CLAUDE.md, "Decisiones de arquitectura ya tomadas") es que
+estos datos NUNCA van a ningún repo de GitHub, público o privado --
+`data/chroma/` contiene texto literal de los chunks, no solo
+embeddings, y la licencia de los PDFs (CC BY-ND para 2016-2025, sin
+licencia abierta en absoluto para 2007-2016) no cubre eso bajo ningún
+esquema de repo.** La ruta correcta, ya decidida por el usuario en
+algún punto anterior no reflejado todavía en `CLAUDE.md`: los datos
+viven en MEGA S4 (almacenamiento de objetos S3-compatible, incluido en
+el plan MEGA Pro Lite del usuario) y se descargan en tiempo de
+arranque del contenedor de deploy, nunca versionados. El repo de
+GitHub se queda público y limpio.
+
+**1. Causa del +20% en disco de `data/chroma/` (continuación 19, sin
+investigar hasta ahora) -- encontrada y arreglada.** Verificado con SQL
+directo contra `chroma.sqlite3` (tabla `segments`, columna `collection`
+cruzada con `collections`): el segmento VECTOR vivo de la colección
+`efsa_reevaluation_chunks` es el directorio `5cb4698b-...`; había un
+SEGUNDO directorio (`1f380e8e-...`, 121 MB) que no aparece en ninguna
+fila de `segments` -- huérfano de una reconstrucción anterior del
+índice (probablemente el backend `torch`/fp32 original, sustituido por
+ONNX int8 en la continuación 19 sin que `chromadb` limpiara el
+directorio del segmento viejo al recrear la colección). Confirmado
+huérfano ANTES de borrar, no solo por tamaño/fecha. Borrado
+(`data/chroma` pasa de 719 MB a **598 MB**) y verificado después:
+`collection.count() == 67827` sin cambios, una consulta real de
+verificación (genotoxicidad de aspartamo) sigue devolviendo el chunk
+correcto. Directamente relevante para el punto 3 de abajo -- 598 MB en
+vez de 719 MB es lo que de verdad se sube a MEGA S4.
+
+**2. Módulo nuevo `src/efsa_rag/deploy_assets.py` --
+`ensure_deploy_assets_downloaded()`:** descarga el xlsx y un tarball de
+`data/chroma/` desde MEGA S4 (boto3, API S3-compatible,
+`addressing_style=path`, sig v4) SOLO si no están ya en disco -- en
+desarrollo local (datos ya presentes) esta función no toca la red en
+absoluto, verificado explícitamente (llamada real con los datos ya en
+disco -> `False`, sin intentar construir el cliente S3 ni pedir
+credenciales). Si faltan Y no hay credenciales configuradas, lanza
+`RuntimeError` con un mensaje explícito de qué falta -- verificado
+también explícitamente (simulando rutas inexistentes). Endpoint /
+bucket / credenciales / región SIEMPRE por variable de entorno
+(`MEGA_S4_ENDPOINT_URL`/`MEGA_S4_BUCKET`/`MEGA_S4_ACCESS_KEY_ID`/
+`MEGA_S4_SECRET_ACCESS_KEY`/`MEGA_S4_REGION`), nunca hardcodeadas. El
+formato de endpoint de MEGA S4 (`s3.<region>.s4.mega.io` o
+`s3.<region>.megas4.com`, dos estilos de direccionamiento soportados)
+se verificó contra `github.com/meganz/s4-specs` antes de escribir el
+cliente, no se asumió.
+
+**3. `scripts/upload_deploy_assets.py` (nuevo, manual, un solo uso por
+el usuario con sus propias credenciales):** empaqueta `data/chroma/` en
+un tarball y sube ambos objetos al bucket. `--dry-run` probado contra
+los datos reales tras la limpieza del punto 1: **xlsx 21,5 MB, chroma 6
+ficheros / 597,1 MB sin comprimir** -- confirma que el script localiza
+y mide los ficheros correctos antes de comprometerse a implementar la
+subida real (no ejecutada en esta sesión -- requiere las credenciales
+reales de MEGA S4 del usuario, que Claude no tiene ni debe pedir por
+chat).
+
+**4. `ui/app.py::_render_answer`** llama a
+`ensure_deploy_assets_downloaded()` justo antes de importar
+`graph.build` (que es lo primero que intentaría abrir `data/chroma/` y
+leer el xlsx), con su propio `try/except` y mensaje de error
+diferenciado del de la generación de la respuesta -- mismo patrón de
+degradación con gracia que el resto de la UI, no una excepción sin
+capturar.
+
+**5. `requirements.txt`** gana `boto3>=1.34`. **`.env.example`** gana
+las 5 variables `MEGA_S4_*` con comentario explicando cuándo hacen
+falta en local (casi nunca) y cómo se trasladan a Streamlit Community
+Cloud (campo "Secrets", formato TOML, no `.env`).
+
+**6. `README.md`** gana una sección "Deploy en Streamlit Community
+Cloud" con los pasos concretos (subir datos con el script, crear la
+app en share.streamlit.io, seleccionar Python en Advanced settings,
+pegar Secrets) **más el riesgo de memoria conocido citado
+explícitamente y sin suavizar** (~1.150-1.170 MB medidos vs. ~1 GB de
+límite del tier gratuito, ver continuación 20) -- para que si el primer
+intento de deploy falla por OOM, no se lea como un fallo de
+configuración de este documento sino como el límite ya conocido.
+
+**Investigado, verificado con fuentes externas actuales (no asumido) y
+NO implementado, por decisión explícita del usuario cuando se le
+preguntó -- reescribir el pipeline de embeddings para usar ONNX Runtime
+directo (sin la capa de `sentence-transformers`/`SentenceTransformer`)
+como palanca adicional de memoria:** el usuario decidió NO tocar esto
+ahora y en su lugar intentar el deploy real tal como está, para
+observar el comportamiento empírico. Queda como candidato futuro si el
+deploy real confirma el bloqueo por memoria, no descartado, solo
+diferido.
+
+**Investigado con `WebSearch`/`WebFetch` contra la documentación
+oficial vigente de Streamlit (no de memoria) antes de dar por buena
+ninguna afirmación sobre el proceso de deploy:**
+- Git LFS "simplemente funciona" con Streamlit Community Cloud sin
+  cambios de código (no relevante ya para este proyecto tras el pivote
+  a MEGA S4, pero se investigó ANTES de que el usuario corrigiera el
+  rumbo -- dejado aquí por honestidad del proceso, no por utilidad).
+- Los secretos pegados en el campo "Secrets" (formato TOML) se exponen
+  automáticamente como `os.environ` ADEMÁS de `st.secrets` -- confirma
+  que `os.environ["DEEPSEEK_API_KEY"]` (ya existente,
+  `graph/llm_client.py`) y las nuevas `os.environ["MEGA_S4_*"]`
+  funcionan sin ningún cambio de código, solo pegando el TOML correcto
+  en el deploy.
+- La versión de Python se selecciona en "Advanced settings" al crear
+  la app (por defecto 3.12, todas las versiones mantenidas soportadas)
+  -- no hace falta ningún `runtime.txt`; `pyproject.toml` ya declara
+  `requires-python = ">=3.11"`, compatible.
+- Tier gratuito: 1 app privada permitida (no relevante ya, el repo se
+  queda público) + límite de RAM ~1 GB (ya conocido, re-confirmado) +
+  las apps duermen tras 12h sin tráfico.
+
+**Actualizado:** `CLAUDE.md` -- pendiente #8 corregido (Streamlit
+Community Cloud como destino activo, sin la afirmación de pivote a HF
+Spaces); nueva decisión de arquitectura documentada ("Deploy de datos
+pesados vía MEGA S4, nunca en git").
+
+**Verificado sin regresiones:** suite completa tras todos los cambios
+de esta sesión (usecols + requirements.txt + deploy_assets.py +
+ui/app.py): **30 passed, 2 skipped**, mismos 2 de siempre.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- La subida real a MEGA S4 (`scripts/upload_deploy_assets.py` sin
+  `--dry-run`) no se ha ejecutado -- necesita las credenciales reales
+  del usuario, fuera del alcance de esta sesión.
+- El primer deploy real en Streamlit Community Cloud no se ha
+  intentado todavía -- pendiente de que el usuario lo haga desde su
+  propia cuenta, como pidió explícitamente.
+- El riesgo de memoria (~1.150-1.170 MB vs. ~1 GB) sigue sin
+  resolverse -- el usuario decidió observarlo empíricamente en vez de
+  seguir optimizando a ciegas.
+- Resto de pendientes sin cambios esta sesión (detección de
+  ambigüedad Nodo 3, servidor MCP con transporte real, mejora de
+  retrieval Nodo 2).
