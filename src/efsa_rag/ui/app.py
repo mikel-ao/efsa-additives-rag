@@ -149,11 +149,16 @@ def render_update_section() -> None:
 
 
 def render_disclaimer() -> None:
+    # Cifras iguales a las del README ("## Alcance") -- mantener
+    # sincronizadas si el corpus cambia (ver CLAUDE.md).
     st.warning(
-        "Esta herramienta es de exploración de literatura regulatoria, "
-        "no de asesoramiento regulatorio ni médico. Las respuestas citan "
-        "el dictamen EFSA correspondiente; verifica siempre la fuente "
-        "original antes de tomar decisiones."
+        "Cubre únicamente los aditivos alimentarios en reevaluación bajo "
+        "el Reglamento (UE) 257/2010 (162 dictámenes indexados), no la "
+        "totalidad de aditivos alimentarios ni otras categorías (pienso "
+        "animal, aromas, etc.). Es una herramienta de exploración de "
+        "literatura regulatoria, no de asesoramiento regulatorio ni "
+        "médico. Las respuestas citan el dictamen EFSA correspondiente; "
+        "verifica siempre la fuente original antes de tomar decisiones."
     )
 
 

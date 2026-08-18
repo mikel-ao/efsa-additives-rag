@@ -4027,3 +4027,24 @@ cambios respecto a la sesión anterior.
 - Ninguna otra sección del README se auditó más allá de "Alcance" y
   "Estado actual" -- "Setup" y "Deploy" no se revisaron por
   desactualización en esta sesión.
+
+## 2026-08-19 (continuación 27) — disclaimer de la UI (`render_disclaimer`) ampliado con el alcance del corpus, mismas cifras que el README
+
+**Fix:** `ui/app.py::render_disclaimer()` -- el aviso solo cubría
+"no es asesoramiento regulatorio ni médico", sin decir nada sobre qué
+cubre el corpus. Añadida una frase al principio del mismo `st.warning`
+(no un warning nuevo, para no fragmentar el primer mensaje que ve el
+usuario en dos bloques): "Cubre únicamente los aditivos alimentarios
+en reevaluación bajo el Reglamento (UE) 257/2010 (162 dictámenes
+indexados), no la totalidad de aditivos alimentarios ni otras
+categorías (pienso animal, aromas, etc.)." -- mismas cifras que
+`README.md` ("## Alcance", sesión anterior), con un comentario en el
+código señalando que deben mantenerse sincronizadas si el corpus
+cambia. El resto del disclaimer original se mantuvo sin recortar
+(3 frases en total, sigue siendo un único bloque corto).
+
+**Verificado sin regresiones:** suite completa, sin cambios de código
+más allá del texto del warning: **31 passed, 2 skipped**.
+
+**Pendiente:** ninguna otra parte de la UI (`ui/app.py`) se tocó ni se
+auditó por consistencia de cifras -- solo `render_disclaimer()`.
