@@ -372,3 +372,110 @@ def test_current_reevaluation_corpus_keeps_substances_already_well_represented(
             "no debía tocarse, su sustancia ya tenía el vigente "
             "representado por otro patrón de título."
         )
+
+
+# substances_per_dossier() (sesión 17-ago-2026, continuación 4) -- extraído
+# del paso intermedio que current_reevaluation_corpus() ya calculaba y
+# descartaba internamente. Casos de regresión ver CLAUDE.md, "Hallazgos
+# verificados": nitritos prueba la exclusión de sustancias de referencia
+# toxicológica sin ADI propio (los 17 compuestos N-nitroso NO deben
+# aparecer); tartratos y glutamato prueban que se recuperan TODAS las
+# sustancias de un dictamen de grupo, no solo la que sobrevive el
+# drop_duplicates por título de unique_reevaluation_opinions().
+#
+# OJO al leer los números: en el diagnóstico de la sesión anterior se
+# reportaron "6 perdidas" (tartratos) y "5 perdidas" (glutamato) -- esas
+# cifras son sustancias INVISIBLES tras el dedup (unión menos la 1 que
+# sobrevive), no el total. El total real (lo que debe devolver esta
+# función) es 7 para tartratos y 6 para glutamato -- verificado contra las
+# hojas reales antes de fijar estos tests, no una suposición.
+
+
+def test_substances_per_dossier_nitrites_excludes_toxicological_references(
+    store: OpenFoodToxStore,
+):
+    """El dictamen de nitritos tiene 20 filas DOSSIER hermanas con el
+    mismo título, pero solo 3 son sustancias con ADI propio (Nitrites,
+    Potassium nitrite, Sodium nitrite) -- las otras 17 son compuestos
+    N-nitroso (N-nitrosodimetilamina y similares) enlazados vía
+    FLEX_SUM.ToxRefValues.OtherReferenceValues como referencia
+    toxicológica dentro de la caracterización de peligro, sin ADI propio
+    para ese enlace. Deben quedar excluidos, no contarse como "sustancias
+    del dossier".
+    """
+    corpus = store.current_reevaluation_corpus()
+    row = corpus[
+        corpus["LiteratureReference.EFSAOutputTitle"]
+        == "Re-evaluation of potassium nitrite (E 249) and sodium nitrite (E 250) as food additives"
+    ].iloc[0]
+
+    mapping = store.substances_per_dossier(corpus)
+    names = {s.chemical_name for s in mapping[row["Document UUID"]]}
+
+    assert names == {"Nitrites", "Potassium nitrite", "Sodium nitrite"}, (
+        f"Se esperaban exactamente 3 sustancias con ADI propio, se obtuvo: {names!r} "
+        "-- si aparece algún compuesto N-nitroso, el filtro por ADI_LOWER_VALUE_COLUMN "
+        "se ha roto."
+    )
+
+
+def test_substances_per_dossier_tartrates_group_returns_all_seven(
+    store: OpenFoodToxStore,
+):
+    """El título de tartratos (E 334-E 337, E 354) genera 7 filas DOSSIER
+    hermanas -- una por sal -- pero unique_reevaluation_opinions() solo
+    conserva 1 tras deduplicar por título. substances_per_dossier() debe
+    recuperar las 7, no solo la ligada a la fila superviviente.
+    """
+    corpus = store.current_reevaluation_corpus()
+    row = corpus[
+        corpus["LiteratureReference.EFSAOutputTitle"]
+        == (
+            "Re-evaluation of L(+)-tartaric acid (E 334), sodium tartrates (E 335), "
+            "potassium tartrates (E 336), potassium sodium tartrate (E 337) and "
+            "calcium tartrate (E 354) as food additives"
+        )
+    ].iloc[0]
+
+    mapping = store.substances_per_dossier(corpus)
+    names = {s.chemical_name for s in mapping[row["Document UUID"]]}
+
+    assert names == {
+        "Tartaric acid (L(+)-)",
+        "Sodium tartrates",
+        "Potassium tartrates",
+        "Potassium acid tartrate",
+        "Sodium potassium tartrate",
+        "Calcium tartrate",
+        "Monosodium tartrate",
+    }, f"Se esperaban las 7 sales del grupo de tartratos, se obtuvo: {names!r}"
+
+
+def test_substances_per_dossier_glutamates_group_returns_all_six(
+    store: OpenFoodToxStore,
+):
+    """El título de glutamatos (E 620-E 625) genera varias filas DOSSIER
+    hermanas -- substances_per_dossier() debe recuperar las 6 sales con
+    ADI propio, no solo la de la fila superviviente del dedup.
+    """
+    corpus = store.current_reevaluation_corpus()
+    row = corpus[
+        corpus["LiteratureReference.EFSAOutputTitle"]
+        == (
+            "Re-evaluation of glutamic acid (E 620), sodium glutamate (E 621), "
+            "potassium glutamate (E 622), calcium glutamate (E 623), ammonium "
+            "glutamate (E 624) and magnesium glutamate (E 625) as food additives"
+        )
+    ].iloc[0]
+
+    mapping = store.substances_per_dossier(corpus)
+    names = {s.chemical_name for s in mapping[row["Document UUID"]]}
+
+    assert names == {
+        "Glutamic acid",
+        "Monosodium L-Glutamate",
+        "Monopotassium L-glutamate",
+        "Calcium di-L-glutamate",
+        "Monoammonium L-glutamate",
+        "Magnesium diglutamate",
+    }, f"Se esperaban las 6 sales del grupo de glutamatos, se obtuvo: {names!r}"

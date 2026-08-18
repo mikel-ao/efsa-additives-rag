@@ -150,6 +150,14 @@ ADI_JUSTIFICATION_COLUMN = (
     "HumanHealthHazardCharacteristics.AcceptableDailyIntake.JustificationAndComments"
 )
 
+# DOCUMENT TYPE de DOSSIER_DOCS que enlazan hacia FLEX_SUM.ToxRefValues --
+# mismo literal ya usado en current_reevaluation_corpus(), extraído aquí
+# solo para reutilizarlo en substances_per_dossier() (sesión 17-ago-2026,
+# continuación 4) sin duplicar el literal. No se ha tocado
+# current_reevaluation_corpus() para usar esta constante -- fuera de
+# alcance de esa sesión, ver CLAUDE.md.
+TOXREF_LINK_DOCUMENT_TYPES = ("FLEXIBLE_SUMMARY", "ToxRefValues")
+
 # Discusión narrativa de END_SUM, ligada al dossier vía el mismo patrón que
 # ADI (Document UUID -> DOSSIER_DOCS -> DOSSIER UUID), pero con
 # DOCUMENT TYPE == 'ENDPOINT_SUMMARY' en vez de 'FLEXIBLE_SUMMARY'.
@@ -205,6 +213,22 @@ class OpinionReference:
     # CLAUDE.md.
     discussion_text: str | None = None
     discussion_is_boilerplate: bool = False
+
+
+@dataclass(frozen=True)
+class DossierSubstance:
+    """Una sustancia con ADI propio cubierta por un dossier de
+    reevaluación -- ver OpenFoodToxStore.substances_per_dossier().
+
+    NO incluye sustancias de referencia toxicológica (contaminantes,
+    subproductos -- p.ej. los compuestos N-nitroso enlazados al dictamen
+    de nitritos vía FLEX_SUM.ToxRefValues.OtherReferenceValues) que no
+    tienen ADI propio para ese enlace concreto -- ver el filtro por
+    ADI_LOWER_VALUE_COLUMN en substances_per_dossier().
+    """
+
+    substance_uuid: str
+    chemical_name: str
 
 
 class OpenFoodToxStore:
@@ -428,6 +452,101 @@ class OpenFoodToxStore:
             result = pd.concat([result, add_rows]).drop_duplicates(
                 subset=["LiteratureReference.EFSAOutputTitle"]
             )
+        return result
+
+    def substances_per_dossier(
+        self, corpus: pd.DataFrame | None = None
+    ) -> dict[str, list[DossierSubstance]]:
+        """Para cada dossier de `corpus` (por defecto
+        `current_reevaluation_corpus()`), la lista COMPLETA de sustancias
+        con ADI propio que cubre -- no solo la sustancia ligada a la fila
+        concreta que sobrevivió el `drop_duplicates` por título de
+        `unique_reevaluation_opinions()`.
+
+        Extraído (sesión 17-ago-2026, continuación 4) del paso intermedio
+        que `current_reevaluation_corpus()` ya calculaba y descartaba
+        internamente para decidir sus 6 sustituciones puntuales (variable
+        `substance_uuids` en esa función) -- NO se ha tocado
+        `current_reevaluation_corpus()` ni `unique_reevaluation_opinions()`
+        para esto, ver CLAUDE.md.
+
+        Motivo de esta función, con las hojas reales (ver CLAUDE.md,
+        "Hallazgos verificados", diagnóstico completo): un dictamen de
+        grupo (p.ej. tartratos E 334-E 337 + E 354, 7 filas DOSSIER
+        hermanas con el MISMO título pero distinto Document UUID -- una
+        por sustancia) deja solo 1 de sus sustancias visible si se
+        resuelve el enlace toxref desde el único `Document UUID` que
+        `drop_duplicates` por título conservó -- las otras 6 quedan
+        invisibles. Verificado sobre el corpus completo: 20 de los 162
+        dossiers (12%) son genuinamente multi-sustancia de esta forma, con
+        46 sustancias en total invisibles si solo se mira la fila
+        superviviente.
+
+        Técnica: para cada título del corpus, se agrupan TODAS las filas
+        hermanas de `reevaluation_dossiers()` (SIN deduplicar) que
+        comparten ese título -- más la propia fila del corpus, por si no
+        está entre las capturadas por patrón de título en absoluto (caso
+        de los dossiers que `current_reevaluation_corpus()` sustituye por
+        el vigente real, ver esa función -- no están en
+        `reevaluation_dossiers()` bajo NINGÚN título, por eso hizo falta
+        sustituirlos) -- y se resuelve el enlace de sustancia de cada fila
+        hermana por separado, tomando la UNIÓN.
+
+        Filtro de ADI (mismo criterio que `_adi_row_for_toxref_uuids`):
+        solo cuenta como "sustancia del dossier" un `Parent UUID` cuya
+        fila de `FLEX_SUM.ToxRefValues` tiene `ADI_LOWER_VALUE_COLUMN` no
+        nulo -- excluye sustancias de referencia toxicológica sin ADI
+        propio (ej. los 17 compuestos N-nitroso enlazados al dictamen de
+        nitritos vía `OtherReferenceValues`, verificado que sin este
+        filtro nitritos daría 20 "sustancias" en vez de las 3 reales:
+        Sodium nitrite, Potassium nitrite, Nitrites).
+
+        Devuelve {dossier_uuid (Document UUID tal como aparece en
+        `corpus`): [DossierSubstance, ...]}, ordenado por chemical_name
+        para salida determinista. Dossiers sin ningún registro de ADI
+        ligado (ver el desglose del "híbrido estrecho" en CLAUDE.md --
+        saccharin, shellac, statements sin ADI propio) devuelven lista
+        vacía, no None -- comportamiento explícito, no un caso de error.
+        """
+        if corpus is None:
+            corpus = self.current_reevaluation_corpus()
+
+        all_dossiers = self.reevaluation_dossiers()
+        dd = self.dossier_docs
+        flex = self.flex_sum_toxref
+
+        result: dict[str, list[DossierSubstance]] = {}
+        for _, row in corpus.iterrows():
+            dossier_uuid = row["Document UUID"]
+            title = row["LiteratureReference.EFSAOutputTitle"]
+
+            sibling_uuids = set(
+                all_dossiers[all_dossiers["LiteratureReference.EFSAOutputTitle"] == title][
+                    "Document UUID"
+                ]
+            )
+            sibling_uuids.add(dossier_uuid)
+
+            linked = dd[
+                dd["DOSSIER UUID"].isin(sibling_uuids)
+                & dd["DOCUMENT TYPE"].isin(TOXREF_LINK_DOCUMENT_TYPES)
+            ]
+            toxref_rows = flex[flex["Document UUID"].isin(linked["DOCUMENT UUID"])]
+            toxref_rows = toxref_rows[toxref_rows[ADI_LOWER_VALUE_COLUMN].notna()]
+            substance_uuids = set(toxref_rows["Parent UUID"].dropna())
+
+            substances = []
+            for suid in substance_uuids:
+                matches = self.sub[self.sub["Document UUID"] == suid]
+                if matches.empty:
+                    continue
+                substances.append(
+                    DossierSubstance(substance_uuid=suid, chemical_name=matches.iloc[0]["ChemicalName"])
+                )
+            substances.sort(key=lambda s: s.chemical_name)
+
+            result[dossier_uuid] = substances
+
         return result
 
     # ------------------------------------------------------------------ #

@@ -85,12 +85,52 @@ comunicación de riesgo de abajo):
 NODE_4_SYSTEM_PROMPT = f"{NODE_4_GROUNDING_RULES}\n{NODE_4_SAFETY_COMMUNICATION_RULES}"
 
 
+@dataclass(frozen=True)
+class RetrievedChunk:
+    """Contrato de salida del Nodo 2 (retrieval híbrido) hacia el Nodo 4 --
+    fijado en sesión 17-ago-2026 (continuación 7) ANTES de escribir el
+    Nodo 2 (sigue siendo `NotImplementedError` en `hybrid_retrieval_node`),
+    para que no haga falta rehacer este contrato cuando se implemente. Ver
+    CLAUDE.md, "Decisiones de arquitectura ya tomadas", para el
+    razonamiento completo.
+
+    Sustituye a `list[str]` (texto plano sin metadatos) en
+    `GraphState.retrieved_chunks`. El Nodo 2 SIEMPRE debe producir esta
+    forma, nunca strings sueltos.
+
+    `text` y `substance_resolution_tier` son los únicos campos que el
+    Nodo 4 consume hoy (ver `_format_retrieved_chunks`). El resto
+    (`chemical_name`, `dossier_uuid`, `dossier_title`, `doi`,
+    `section_heading`, `page_number`) se fija ahora porque es la misma
+    información que ya va a estar en los metadatos de cada chunk de
+    Chroma (ver el esquema de metadatos diseñado en CLAUDE.md,
+    "Hallazgos verificados") -- el Nodo 2 solo tiene que copiarlos, no
+    inventar de dónde sacarlos. Sin uso todavía en el Nodo 4; añadir un
+    consumidor cuando aparezca una necesidad concreta.
+    """
+
+    text: str
+    substance_uuid: str
+    chemical_name: str
+    dossier_uuid: str
+    dossier_title: str
+    # 1 = sustancia con ADI propio ligado a este dossier; 2 = sustancia
+    # identificada vía el mismo enlace estructural pero sin ADI (patrón
+    # TiO2); 3 = identidad de sustancia inferida por coincidencia de
+    # nombre en el título, sin enlace estructural -- ver
+    # OpenFoodToxStore.substances_per_dossier() y CLAUDE.md.
+    substance_resolution_tier: int
+    doi: str | None = None
+    section_heading: str | None = None
+    page_number: int | None = None
+
+
 class GraphState(TypedDict, total=False):
     user_query: str
     substance_name: str | None
     substance_uuid: str | None
     structured_result: OpinionReference | None
-    retrieved_chunks: list[str]
+    retrieved_chunks: list[RetrievedChunk]
     vigencia_ambigua: bool
     answer: str
     citation: str | None
@@ -124,7 +164,13 @@ def hybrid_retrieval_node(state: GraphState, deps: NodeDependencies) -> GraphSta
     """Query estructurada contra OpenFoodTox + búsqueda vectorial contra
     Chroma para el contexto narrativo del dictamen.
 
-    TODO: conectar deps.vectorstore.similarity_search(...).
+    TODO: conectar deps.vectorstore.similarity_search(...). El resultado
+    DEBE poblar `state["retrieved_chunks"]` como `list[RetrievedChunk]`
+    (contrato fijado en sesión 17-ago-2026, continuación 7 -- ver
+    CLAUDE.md, "Decisiones de arquitectura ya tomadas"), NUNCA como
+    `list[str]` -- copiar `substance_resolution_tier` y el resto de
+    campos directamente de los metadatos de cada chunk en Chroma (mismo
+    esquema diseñado en CLAUDE.md, "Hallazgos verificados").
     """
     raise NotImplementedError
 
@@ -169,7 +215,27 @@ def _format_structured_result(result: OpinionReference | None) -> str:
     if result.adi_value is not None:
         adi_line = f"- ADI: {result.adi_value} {result.adi_unit or '(unidad no disponible)'}"
     else:
-        adi_line = "- ADI: no disponible en los datos estructurados"
+        # NO generalizar el motivo -- verificado sobre el corpus real
+        # (sesión 17-ago-2026, ver CLAUDE.md "Hallazgos verificados"):
+        # de las sustancias sin ADI numérico, la mayoría (gomas, ceras,
+        # glicerol, plata, oro...) lo tienen por un motivo FAVORABLE (el
+        # panel no consideró necesario un límite), y solo alguna (dióxido
+        # de titanio) por una preocupación de seguridad concreta
+        # (genotoxicidad). Instruir al LLM a mirar la justificación/
+        # discusión ya incluidas más abajo en vez de asumir cuál aplica.
+        adi_line = (
+            "- ADI: no hay un valor numérico en los datos estructurados "
+            "para esta sustancia. Esto puede deberse a motivos opuestos "
+            "-- que el panel no considerara necesario fijar un límite "
+            "numérico (frecuente en gomas, ceras y espesantes), o que no "
+            "pudiera establecerse un ADI por una preocupación científica "
+            "concreta (p. ej. genotoxicidad, como en el dióxido de "
+            "titanio). NO asumas cuál de los dos aplica aquí -- básate "
+            "solo en la justificación del ADI y la discusión narrativa de "
+            "más abajo si mencionan el motivo; si ninguna de las dos lo "
+            "aclara, dilo explícitamente en la respuesta en vez de "
+            "especular."
+        )
 
     if result.adi_justification:
         justification_line = (
@@ -217,13 +283,30 @@ def _format_structured_result(result: OpinionReference | None) -> str:
     )
 
 
-def _format_retrieved_chunks(chunks: list[str] | None) -> str:
+def _format_retrieved_chunks(chunks: list[RetrievedChunk] | None) -> str:
     if not chunks:
         return (
             "(vacío -- el corpus de PDFs todavía no está indexado; no hay "
             "fragmentos narrativos disponibles para esta consulta)"
         )
-    return "\n\n".join(f"[fragmento {i + 1}]\n{chunk}" for i, chunk in enumerate(chunks))
+    parts = []
+    for i, chunk in enumerate(chunks):
+        caveat = ""
+        if chunk.substance_resolution_tier == 3:
+            # Mismo patrón que discussion_line en _format_structured_result:
+            # instrucción incrustada en el propio dato del prompt de
+            # usuario, no una regla nueva en el system prompt -- ver
+            # CLAUDE.md, "Decisiones de arquitectura ya tomadas".
+            caveat = (
+                " [La identificación de qué sustancia cubre este fragmento "
+                "se hizo por coincidencia de nombre en el título del "
+                "dictamen, no por un enlace estructural confirmado -- menos "
+                "fiable que el resto del contexto. Si te apoyas en él, "
+                "comunica esa incertidumbre en vez de darle la misma "
+                "confianza que a los demás fragmentos.]"
+            )
+        parts.append(f"[fragmento {i + 1}]{caveat}\n{chunk.text}")
+    return "\n\n".join(parts)
 
 
 def _build_user_prompt(state: GraphState) -> str:

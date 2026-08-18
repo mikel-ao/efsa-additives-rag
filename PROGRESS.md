@@ -642,3 +642,670 @@ CLAUDE.md, "Hallazgos verificados".
   `unique_reevaluation_opinions()` en vez de por título -- mejora
   pendiente, no bloqueante (el checklist ya compensa el caso conocido).
 - Sin cambios en Nodo 1, Nodo 2, servidor MCP, deploy esta sesión.
+
+## 2026-08-17 (continuación 2) — 161/161 PDFs confirmados en disco, `.gitignore` corregido, investigación de licencia de los PDFs antes de indexar
+
+**Contexto:** retomando tras reinicio. Confirmado en disco
+(`ls data/raw/pdfs/ | wc -l`) que los 161 PDFs de la sesión anterior ya
+están descargados y commiteados (`defd7b6`). Antes de empezar el
+pipeline de chunking/embeddings/Chroma (pendiente #5), el usuario pidió
+dos cosas: corregir `.gitignore` para que el índice de Chroma sí se
+versione (coherente con la decisión "Opción A" ya tomada) e investigar
+la licencia real de los PDFs, porque Chroma va a guardar el TEXTO de
+los chunks, no solo embeddings -- si el repo es público, eso redistribuye
+ese texto, y hace falta saber si la licencia lo permite antes de decidir.
+
+**Implementado:**
+- `.gitignore`: se probó eliminar la línea `data/chroma/` (petición
+  inicial del usuario, ver más abajo por qué se revirtió) y se
+  mantienen sin cambios las exclusiones de `data/raw/*.xlsx` y
+  `data/raw/pdfs/`.
+
+**Investigado (licencia de los 161 PDFs) -- hallazgo importante, deja
+una decisión pendiente sin resolver, ver más abajo:**
+- Escaneado el texto completo de los 161 PDFs (`pdftotext`) buscando
+  menciones de "Creative Commons". Resultado: **no es uniforme, dos
+  regímenes de licencia distintos según fecha de publicación.**
+  - **82/161 (2016-2025):** llevan literalmente en el texto "This is an
+    open access article under the terms of the Creative Commons
+    Attribution-NoDerivs License, which permits use and distribution in
+    any medium, provided the original work is properly cited and no
+    modifications or adaptations are made." -- **CC BY-ND**, misma
+    frase exacta en los 82, sin variante NC. Permite uso comercial y no
+    comercial, pero solo "unchanged and in whole" -- no fragmentos.
+  - **79/161 (2007-2016, con solape en 2016 -- el corte real es a
+    mitad de año, no un cambio de año natural):** SIN ninguna mención
+    de Creative Commons en ningún punto del texto. Contrastado contra
+    la política oficial de la época (`EFSA Journal Editorial Policy`,
+    13-feb-2013, descargada y leída directamente): su sección de
+    copyright NO menciona Creative Commons en absoluto -- es una
+    política propia de EFSA que autoriza reproducción para uso
+    personal/educativo o difusión NO comercial con atribución, más
+    restrictiva que CC BY-ND (no cubre uso comercial, y su alcance no
+    contempla claramente "publicar en un repo público de GitHub").
+    Confirmado por búsqueda web de forma independiente: el traslado del
+    EFSA Journal a Wiley como editor (y la introducción de la licencia
+    Creative Commons) ocurrió en 2016 -- coincide exactamente con el
+    corte encontrado en el escaneo de texto.
+- **Conclusión, sin decidir nada unilateralmente:** ninguno de los dos
+  regímenes da un "sí" limpio a publicar el TEXTO de los chunks (no
+  solo los embeddings numéricos) en un repo público sin restricción --
+  el bloque más antiguo (49% del corpus) no tiene licencia abierta en
+  absoluto, y el más reciente (51%) es CC BY-ND, que por su propia
+  descripción oficial cubre redistribuir el artículo completo sin
+  cambios, no fragmentos trocedados. Detalle completo, con las citas
+  exactas de ambas fuentes primarias, en CLAUDE.md, "Hallazgos
+  verificados". Añadida nota explícita en la decisión "Opción A" de
+  CLAUDE.md señalando esta pregunta como abierta.
+
+**Decisión tomada por el usuario, a la vista del hallazgo de
+licencia:** `data/chroma/` se mantiene en `.gitignore` -- NO se
+versiona en el repo público de GitHub. Razón explícita dada por el
+usuario: no es precaución genérica, es la consecuencia directa de que
+79/161 PDFs (49%, dictámenes 2007-2016) no tienen ninguna licencia
+abierta, solo la política de copyright propia de EFSA (sin cobertura
+clara de redistribución pública ni de uso comercial), y los otros
+82/161 (CC BY-ND 2016-2025) están pensados para redistribuir el
+artículo completo sin cambios, no fragmentos trocedados. El índice sí
+se sigue empaquetando en la imagen/artefacto de **despliegue** (Opción
+A se mantiene para eso), solo se excluye del repo fuente de GitHub --
+son dos destinos distintos, no la misma decisión. `.gitignore` revertido
+a incluir `data/chroma/` (el intento inicial de quitarla se deshizo).
+CLAUDE.md actualizado en ambos sitios relevantes ("Hallazgos
+verificados" y la decisión "Opción A") para que quede como decisión
+tomada con motivo documentado, no como pendiente.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Pipeline de chunking/embeddings/Chroma (pendiente #5) sigue sin
+  empezar -- ya desbloqueado en cuanto a destino del índice (decidido
+  arriba), próximo paso lógico de la siguiente sesión.
+- Sin cambios en Nodo 1, Nodo 2, servidor MCP, deploy esta sesión.
+
+## 2026-08-17 (continuación 3) — Diagnóstico de estructura de PDFs + diseño de esquema de metadatos multi-sustancia, antes de escribir el chunker
+
+**Contexto:** antes de empezar a escribir código de chunking/embeddings,
+el usuario pidió dos cosas de diagnóstico y diseño puro (sin instalar ni
+ejecutar nada de embeddings): (1) abrir 3 PDFs reales (uno corto, uno
+largo, uno con `discussion_is_boilerplate=True`) y describir su
+estructura; (2) proponer el esquema de metadatos para los 29 (cifra de
+partida, corregida durante la sesión -- ver abajo) archivos que cubren
+más de un E-number.
+
+**Diagnóstico de estructura de PDFs (solo `pdftotext`/`pdfinfo`, sin
+dependencias nuevas):**
+- Corto: `sinE_10.2903_j.efsa.2011.1996.pdf` (5 pp., 41 KB, un
+  "Statement") -- estructura mínima y estable: Abstract, TOC, Background,
+  Terms of Reference, Evaluation, References, sin tablas.
+- Largo: `E338-E343-E450_10.2903_j.efsa.2019.5674.pdf` (156 pp., 16 MB,
+  grupo de fosfatos) -- jerarquía de encabezados numerados hasta 4
+  niveles (`3.10.2.`), 12 tablas de datos. **Confirmado el riesgo que
+  motivó la pregunta: `Table 5a` (exposición dietética, 7 grupos de
+  población × 2 escenarios × percentil) se rompe mal con extracción de
+  texto plano** -- encabezados de columna separados de sus valores
+  numéricos sin marca de correspondencia, un splitter de texto plano la
+  trocearía sin sentido tabular reconstruible.
+- Mediano con `discussion_is_boilerplate=True`:
+  `E507-E508-E509-E511_10.2903_j.efsa.2019.5751.pdf` (51 pp., 5,4 MB,
+  grupo de cloruros). **Hallazgo no buscado:** el PDF tiene su propia
+  sección `4. Discussion` con varios párrafos de razonamiento real, más
+  rica que el campo corto `END_SUM.Discussion.Discussion` que sí está
+  marcado como boilerplate para este dossier -- confirma que el
+  pipeline de PDFs (pendiente #5) no es redundante con el campo
+  `discussion_text` ya integrado (pendiente #3): son dos fuentes de
+  discusión distintas, y `discussion_is_boilerplate=True` en el xlsx NO
+  implica que el PDF tampoco tenga discusión sustantiva.
+
+**Corrección de cifra encontrada al diseñar el mapeo sustancia→archivo:
+no son 29/161 PDFs multi-E-number, son AL MENOS 36/161 (22%).** El
+pendiente #5 contaba solo filas con `;` en la columna `e_number` del
+checklist. Comparando el número de nombres en `sustancia` contra el
+número de códigos en `e_number` para las 161 filas, 36 tienen recuentos
+DISTINTOS -- incluye casos donde `e_number` no tiene `;` en absoluto
+pero `sustancia` sí lista varios nombres (ej. E472a-f: 6 nombres de
+sustancia, 1 solo código "E472A" en el checklist).
+
+**Causa raíz investigada con las hojas reales (caso E472a-f, DOI
+`10.2903/j.efsa.2020.6032`):** el título aparece en 6 filas DISTINTAS de
+`DOSSIER`, cada una con su propio `Document UUID` que enlaza (vía
+`DOSSIER_DOCS` → `FLEX_SUM.ToxRefValues.Parent UUID` → `SUB`) a
+exactamente 1 de las 6 sustancias reales -- verificado resolviendo las 6
+`Parent UUID` a 6 `ChemicalName` distintos en `SUB`, cada uno un
+componente real de E472a-f. `unique_reevaluation_opinions()`/
+`current_reevaluation_corpus()` deduplican por título, así que solo 1 de
+las 6 filas sobrevive al corpus -- ni la columna `e_number` del
+checklist (hereda el mismo problema) ni el join estructural desde el
+`Document UUID` post-dedup en solitario capturan las 6.
+
+**Técnica verificada que sí recupera las 6 sustancias completas (solo
+verificada manualmente, NO implementada):** agrupar las filas de
+`DOSSIER` por DOI/título ANTES del dedup, resolver el enlace toxref de
+cada fila hermana por separado, tomar la UNIÓN de sustancias. Verificado
+con E472a-f: cada una de las 6 filas hermanas resuelve individualmente a
+1 sustancia real, la unión da las 6.
+
+**Diseño de esquema de metadatos propuesto (solo diseño, nada
+implementado):** para un chunk que sirve a N sustancias, indexarlo N
+veces en Chroma (mismo texto/embedding, N entradas de metadato), cada
+una con `substance_uuid`/`e_number`/`chemical_name` singulares
+(exact-match eficiente en `where`) + `chunk_group_id` compartido entre
+las N copias (para deduplicar en la app si una consulta toca más de una
+sustancia del mismo dictamen) + `dossier_uuid`/`pdf_filename`/`doi`/
+`section_heading`/`page_number`/`is_group_dossier`. Alternativa
+descartada y documentada (un solo chunk con `substance_uuids`
+delimitado por `;`): Chroma no filtra eficientemente sobre substring de
+un campo delimitado, obligaría a sobre-recuperar y filtrar en Python; a
+esta escala (161 PDFs) la duplicación de embeddings es barata y no hay
+razón de rendimiento para preferir la alternativa.
+
+Detalle completo (con las citas de las hojas y los UUIDs verificados) en
+CLAUDE.md, "Hallazgos verificados". Pendiente #5 de "Estado del código"
+actualizado con la cifra corregida (36, no 29).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **Ninguna implementación de chunking/embeddings/Chroma todavía** --
+  esta sesión fue solo diagnóstico y diseño, tal como se pidió
+  explícitamente.
+- Decisión no zanjada: si las tablas grandes de exposición dietética se
+  excluyen del RAG narrativo (el dato cuantitativo ya viene de
+  OpenFoodTox) o si se intenta una extracción de tablas separada
+  (`pdfplumber`/`camelot`) -- pendiente de decidir al escribir el
+  chunker, no bloqueante para empezar con el texto narrativo.
+- La técnica de "agrupar filas hermanas por DOI antes del dedup" para
+  enumerar sustancias por archivo está verificada solo para el caso
+  E472a-f -- no confirmada contra los otros 35 casos de mismatch antes
+  de implementarla como función reutilizable.
+- Sin cambios en Nodo 1, Nodo 2, servidor MCP, deploy esta sesión.
+
+## 2026-08-17 (continuación 4) — Alcance completo del bug de deduplicación por título, comparación `current_reevaluation_corpus()` vs `unique_reevaluation_opinions()`
+
+**Contexto:** la sesión anterior encontró el bug de deduplicación por
+título con el caso E472a-f y estimó "36/161 archivos afectados"
+comparando columnas del checklist. El usuario pidió cuantificar el
+alcance REAL del bug (no solo E472a-f) directamente sobre las hojas, y
+comparar si `current_reevaluation_corpus()` (el híbrido que ya resuelve
+por sustancia) evita el problema o lo comparte -- con la sugerencia de
+que, si lo evita, quizás la fuente correcta para el chunking sea esa
+función en vez de reconstruir la lista desde el checklist. Solo
+diagnóstico y comparación, sin implementar ningún fix.
+
+**Metodología:** sobre `reevaluation_dossiers()` SIN deduplicar (338
+filas, 162 títulos únicos), agrupado por título, comparando para cada
+grupo con >1 fila DOSSIER la unión de sustancias enlazadas vía
+`FLEX_SUM.ToxRefValues.Parent UUID` de TODAS las filas hermanas contra
+lo visible solo a través de la fila que sobrevive el `drop_duplicates`.
+
+**Corrección metodológica importante, encontrada investigando el caso
+de nitritos (20 filas DOSSIER hermanas para el mismo título):** contar
+ciegamente todos los `Parent UUID` enlazados da 20 "sustancias" -- pero
+verificado con las hojas reales que **17 de esas 20 son compuestos
+N-nitroso (sustancias de referencia toxicológica citadas en la
+caracterización de peligro, no aditivos que el PDF cubra con su propio
+E-number)**. Señal que las distingue, ya usada en otro punto del código
+(`_adi_row_for_toxref_uuids`): las 3 sustancias reales (Sodium nitrite,
+Potassium nitrite, Nitrites) tienen `Adi.lowerValue` poblado para esa
+fila de `FLEX_SUM.ToxRefValues`; las 17 N-nitroso no (enlazadas vía
+`OtherReferenceValues`, no vía ADI). Un recuento de sustancias sin este
+filtro sobreestima sistemáticamente en dossiers de contaminantes.
+
+**Cifra corregida, con el filtro de ADI aplicado:** 105/162 títulos
+(65%) tienen exactamente 1 fila DOSSIER, sin ambigüedad. De los 57
+títulos con >1 fila hermana, **solo 20 (12% del corpus) son
+genuinamente multi-sustancia** (unión de sustancias con ADI propio >
+1). Entre esos 20: 62 sustancias reales en total, de las cuales solo 16
+son visibles a través de la fila superviviente del dedup -- **46
+sustancias con ADI propio quedan invisibles**. Peores casos: tartratos
+E334-E337+E354 (7 sustancias, 6 perdidas), glutamato E620-E625 (6
+sustancias, 5 perdidas), ésteres de sorbitán E491-E495 (5 sustancias, 4
+perdidas), colorantes caramelo E150a-d (5 sustancias, 4 perdidas).
+E472a-f (5 perdidas) es uno más de la lista, no el peor caso.
+Confirmado además que agrupar por DOI en vez de por título no cambia el
+resultado (161 DOIs únicos vs 162 títulos únicos, única discrepancia ya
+conocida: la errata de saccharin).
+
+**Comparación pedida -- ¿`current_reevaluation_corpus()` evita el bug?
+Verificado ejecutándolo, no solo leyendo el código:** **NO, lo hereda
+intacto como DataFrame de salida.** Para el título de nitritos devuelve
+exactamente 1 fila (igual que `unique_reevaluation_opinions()`), no 3
+ni 20 -- porque parte de `base = unique_reevaluation_opinions()` y su
+lógica de sustitución solo intercambia filas completas para 6 casos
+puntuales (Grupo A/B), nunca expande un título a varias filas. **PERO**
+el CÓDIGO de `current_reevaluation_corpus()` sí construye internamente,
+como paso intermedio descartado, la enumeración de sustancias correcta
+-- calcula `substance_uuids` a partir de `reevaluation_dossiers()` SIN
+deduplicar (todas las filas hermanas), no del conjunto ya deduplicado
+-- solo que ese paso se usa únicamente para decidir 6 sustituciones
+puntuales y nunca se expone como resultado reutilizable.
+
+**Conclusión, respondiendo directamente a la pregunta planteada:** la
+solución no es arreglar `unique_reevaluation_opinions()` (colapsar a 1
+fila por título es correcto para esa función -- cuenta documentos/PDFs,
+no sustancias) ni usar `current_reevaluation_corpus()` como fuente
+directa (su output tiene el mismo problema pese al nombre). **La
+solución es extraer la TÉCNICA que ya usa internamente** (agrupar por
+título/DOI sin deduplicar + filtrar por `Adi.lowerValue` no nulo +
+unión) **como una función nueva y reutilizable**, ni reconstruir desde
+las columnas del checklist (ninguna de las dos es fiable por sí sola --
+`sustancia` sobre-reporta para nitritos sin el filtro de ADI, `e_number`
+sub-reporta para E472a-f). Detalle completo, con las cifras exactas por
+caso, en CLAUDE.md, "Hallazgos verificados". Pendiente #5 de "Estado
+del código" actualizado con la cifra final (20 títulos / 46 sustancias,
+no 29 ni 36).
+
+**Corrección adicional hecha en esta sesión:** al insertar el bloque de
+hallazgos de la sesión anterior, un `Edit` había borrado por accidente
+el encabezado `## Decisiones de arquitectura ya tomadas` de CLAUDE.md
+(el contenido seguía ahí, pero sin su título de sección) -- detectado y
+corregido al hacer `grep` de todos los encabezados `##` del documento
+antes de añadir contenido nuevo.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **Ninguna implementación todavía** -- esta sesión fue solo
+  diagnóstico y comparación, tal como se pidió explícitamente. La
+  función reutilizable de enumeración de sustancias por dossier queda
+  como diseño verificado, no como código.
+- Sin cambios en Nodo 1, Nodo 2, servidor MCP, deploy esta sesión.
+
+## 2026-08-17 (continuación 5) — `substances_per_dossier()` implementado y verificado
+
+**Contexto:** la sesión anterior dejó diseñada (sin implementar) la
+técnica correcta para enumerar todas las sustancias de un dossier de
+grupo. El usuario pidió extraerla como función pública reutilizable,
+verificarla contra los 3 casos ya identificados (nitritos, tartratos,
+glutamato) y añadir tests de regresión -- sin tocar
+`unique_reevaluation_opinions()` ni `current_reevaluation_corpus()`.
+
+**Implementado en `ingestion/openfoodtox.py`:**
+- Nuevo dataclass `DossierSubstance` (`substance_uuid` + `chemical_name`).
+- Nuevo método `OpenFoodToxStore.substances_per_dossier(corpus=None)` --
+  para cada dossier de `corpus` (por defecto `current_reevaluation_corpus()`),
+  agrupa todas las filas hermanas de `reevaluation_dossiers()` SIN
+  deduplicar que comparten título (más la propia fila del dossier, para
+  cubrir los 6 casos que `current_reevaluation_corpus()` sustituye y que
+  no están bajo ningún título en `reevaluation_dossiers()`), resuelve el
+  enlace de sustancia de cada una vía `FLEX_SUM.ToxRefValues`, filtra por
+  `ADI_LOWER_VALUE_COLUMN` no nulo (mismo criterio que
+  `_adi_row_for_toxref_uuids`, ya usado en otro punto del código) y
+  devuelve la unión. Nueva constante `TOXREF_LINK_DOCUMENT_TYPES` para no
+  duplicar el literal `("FLEXIBLE_SUMMARY", "ToxRefValues")` ya usado en
+  `current_reevaluation_corpus()` -- esa función NO se ha tocado.
+- **No se ha modificado ninguna línea de `unique_reevaluation_opinions()`
+  ni `current_reevaluation_corpus()`** -- confirmado con `git diff`
+  antes de dar la tarea por completa.
+
+**Verificado contra el xlsx real, los 3 casos pedidos:**
+- Nitritos → exactamente `{Nitrites, Potassium nitrite, Sodium nitrite}`
+  -- los 17 compuestos N-nitroso quedan excluidos por el filtro de ADI.
+- Tartratos → las 7 sales del grupo E334-E337+E354.
+- Glutamato → las 6 sales del grupo E620-E625.
+- **Corrección de expectativa encontrada al verificar:** el usuario
+  esperaba "6" para tartratos y "5" para glutamato -- esas eran las
+  cifras de sustancias PERDIDAS (invisibles tras el dedup) reportadas en
+  la sesión anterior, no el total. El total real (lo que la función debe
+  devolver) es 7 y 6 respectivamente -- confirmado contra las hojas antes
+  de fijar los tests, no ajustado a la expectativa inicial.
+
+**Tests de regresión nuevos en `tests/test_openfoodtox_joins.py`:**
+`test_substances_per_dossier_nitrites_excludes_toxicological_references`,
+`test_substances_per_dossier_tartrates_group_returns_all_seven`,
+`test_substances_per_dossier_glutamates_group_returns_all_six` --
+**15/15 tests pasan** (12 previos + 3 nuevos), ~58s de tiempo total de
+ejecución.
+
+**Hallazgo adicional al correr la función sobre el corpus completo (162
+dossiers):** 99 dossiers no tienen ninguna sustancia con ADI propio
+ligada -- verificado que al menos uno (dióxido de titanio E171) es un
+caso legítimo, no un fallo: su dossier vigente de 2021 tiene
+`adi_value=None` en `current_reference_value_opinion` porque EFSA no
+pudo establecer un ADI por preocupaciones de genotoxicidad. **Límite de
+alcance documentado, no resuelto en esta sesión:** para dossiers de
+sustancia única sin ADI, `substances_per_dossier()` devuelve lista
+vacía aunque la identidad de la sustancia no sea ambigua -- el chunking
+tendrá que resolver esos casos por otra vía (`substance_uuid_by_name`
+directamente), esta función está pensada para el caso multi-sustancia.
+
+**Corrección de un error propio detectado durante esta sesión:** un
+`Edit` de la sesión anterior había borrado por accidente el encabezado
+`## Decisiones de arquitectura ya tomadas` de CLAUDE.md -- ya estaba
+corregido antes de empezar esta sesión (arreglado en la continuación 4),
+mencionado aquí solo para que quede trazado en qué sesión se detectó y
+corrigió.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Rendimiento: `substances_per_dossier()` no cachea nada, ~27s para los
+  162 dossiers del corpus completo -- aceptable para un script de
+  indexación que se ejecuta una vez, no para uso repetido en un flujo
+  interactivo. Memoizar si se acaba llamando así.
+- El diseño del esquema de metadatos por chunk (indexar N veces, uno por
+  sustancia, con `chunk_group_id` compartido) sigue siendo solo diseño --
+  la función que lo alimenta ya existe, pero el chunker en sí no se ha
+  empezado a escribir.
+- Sin cambios en Nodo 1, Nodo 2, servidor MCP, deploy esta sesión.
+
+## 2026-08-17 (continuación 6) — Desglose completo de los 99 dossiers sin sustancia con ADI, diseño de resolución en 3 niveles
+
+**Contexto:** antes de escribir el chunker, el usuario pidió el listado
+completo de los 99 dossiers donde `substances_per_dossier()` devuelve
+lista vacía, cuántos son "TiO2-like" (sin ADI pero sustancia clara) vs.
+cuántos necesitan de verdad `substance_uuid_by_name()`, y una propuesta
+(sin implementar) de cómo el indexado va a resolver sustancia(s) para
+los 162 dossiers combinando ambos caminos. Solo diagnóstico y diseño.
+
+**Desglose de los 99 (verificado contra las hojas reales):**
+- **73: sustancia única, sin ADI (patrón TiO2)** -- el enlace
+  `Parent UUID` sigue existiendo y resuelve a exactamente 1 sustancia,
+  simplemente sin `Adi.lowerValue` relleno (ADI "no establecida", común
+  en gomas/ceras/colorantes minerales). Lista completa en CLAUDE.md,
+  "Hallazgos verificados".
+- **22: multi-sustancia, NINGUNA con ADI** -- dossiers de grupo
+  genuinos (alginatos, celulosas [10 sustancias, el mayor], sulfatos de
+  aluminio, cloruros, sacarina [antes del fix de agrupación, ver
+  abajo], etc.) -- misma fiabilidad de identidad que los de Tier 1 con
+  ADI, necesitan el mismo tratamiento de "N copias por chunk".
+- **4: sin ningún enlace toxref en absoluto** -- coincide con el
+  hallazgo ya documentado del "híbrido puro": sucralosa (statement),
+  shellac, saccharin (variante de título sin la errata de espacio),
+  statement genérico de "two recent scientific articles...".
+
+**Corrección de diseño encontrada al investigar el caso de saccharin:**
+agrupar las filas hermanas por DOI en vez de por TÍTULO (lo que hace
+`substances_per_dossier()` hoy) resuelve el caso de saccharin sin
+heurística -- las dos variantes de título (con/sin la errata de
+espacio, mismo DOI) tienen 1 y 4 filas hermanas respectivamente si se
+agrupa por título, pero comparten las 5 completas si se agrupa por DOI,
+resolviendo las 4 sales de sacarina. **Verificado que cambiar la clave
+de agrupación de título a DOI no cambia NINGÚN otro resultado ya
+comprobado** (nitritos, tartratos, glutamato, y el resto de los 160
+dossiers dan los mismos siblings por ambas claves) -- mejora
+estrictamente más segura, propuesta pero no implementada.
+
+**Con esa mejora, quedan solo 3/162 dossiers sin ningún enlace
+estructural:** sucralosa, shellac, y el statement genérico. De estos,
+`substance_uuid_by_name()` resuelve 2 limpiamente por nombre extraído
+del título (Sucralose, Shellac). El tercero (statement genérico sobre
+edulcorantes artificiales) NO menciona ninguna sustancia con E-number
+en el título -- aunque probablemente es "sobre" aspartamo en el fondo,
+inferirlo automáticamente del título sería una suposición editorial sin
+precedente en los heurísticos ya usados en este proyecto. **Propuesta:
+dejarlo sin sustancia estructurada, no forzar la inferencia.**
+
+**Diseño de resolución en 3 niveles (propuesto, no implementado):**
+1. Nivel 1: `substances_per_dossier()` tal como existe hoy (con ADI) --
+   63/162 dossiers.
+2. Nivel 2: la misma función con un parámetro nuevo `require_adi=False`
+   -- mismo mecanismo estructural, sin diferencia de confianza en la
+   identidad de la sustancia, resuelve 96/162 adicionales.
+3. Nivel 3: `substance_uuid_by_name()` sobre nombre extraído del título,
+   solo para los 3 casos restantes sin enlace -- resuelve 2 más.
+
+**Cobertura total: 161/162 dossiers con al menos 1 sustancia resuelta,
+1/162 sin sustancia estructurada a propósito** (el statement genérico).
+Campo de metadato nuevo propuesto: `substance_resolution_tier`
+(1/2/3) por cada entrada sustancia-chunk, para que el Nodo 4 pueda
+distinguir "ADI real" de "sustancia identificada sin ADI" (coincide con
+la comunicación de riesgo que el proyecto ya necesita para casos como
+TiO2) de "identidad inferida por heurística de título, tratar con más
+cuidado". Detalle completo, con el listado de los 73+22+4 dossiers, en
+CLAUDE.md, "Hallazgos verificados".
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **Nada implementado todavía** -- solo diagnóstico y diseño, tal como
+  se pidió. `substances_per_dossier()` sigue con `require_adi` fijo
+  (implícitamente `True`) y agrupación por título, no por DOI.
+- El diseño de 3 niveles y el campo `substance_resolution_tier` quedan
+  como especificación a implementar cuando se escriba el chunker.
+- Sin cambios en Nodo 1, Nodo 2, servidor MCP, deploy esta sesión.
+
+## 2026-08-17 (continuación 7) — Nodo 4 usa `substance_resolution_tier`: texto tier 1/2, contrato `RetrievedChunk` para tier 3
+
+**Contexto:** antes de escribir el chunker, se pidió confirmar
+explícitamente cómo el Nodo 4 iba a comunicar cada nivel de
+`substance_resolution_tier` -- al revisar el código real
+(`_format_structured_result`/`_format_retrieved_chunks`), el diseño de
+la sesión anterior resultó incompleto: tier 1/2 ya tenía gancho en
+código existente (`adi_value is None`), pero tier 3 necesitaba un
+cambio de contrato (`retrieved_chunks` era `list[str]`, sin metadatos)
+que no se había hecho explícito. Confirmado el planteamiento con el
+usuario antes de implementar, en este orden: (1) tier 1/2, ya; (2)
+documentar el contrato de `RetrievedChunk` en CLAUDE.md antes de
+tocar código; (3) implementar el cambio de tipo ahora, aunque el Nodo 2
+no exista todavía, para fijar el contrato de una vez.
+
+**Implementado en `graph/nodes.py`:**
+1. **Tier 1/2 -- `_format_structured_result`:** el branch `else` de
+   `adi_line` (antes "ADI: no disponible en los datos estructurados")
+   ahora explica que la ausencia de ADI puede deberse a motivos
+   OPUESTOS (favorable -- sin necesidad de límite, frecuente en gomas/
+   ceras -- o de preocupación -- ej. genotoxicidad, caso TiO2) e
+   instruye a no asumir cuál aplica sin comprobarlo en
+   `adi_justification`/`discussion_text`, ya incluidos en el mismo
+   prompt. **Deliberadamente NO se generaliza "genotoxicidad" como
+   motivo por defecto** -- verificado sobre las 73 sustancias
+   tier-2 reales que la mayoría carece de ADI por el motivo contrario;
+   un texto que sugiriera preocupación por defecto sería engañoso para
+   ellas.
+2. **Contrato `RetrievedChunk` documentado en CLAUDE.md** ("Decisiones
+   de arquitectura ya tomadas") ANTES de tocar código, tal como se
+   pidió -- razonamiento completo + firma exacta del dataclass.
+3. **Tier 3 -- nuevo dataclass `RetrievedChunk`** (`text`,
+   `substance_uuid`, `chemical_name`, `dossier_uuid`, `dossier_title`,
+   `substance_resolution_tier`, `doi`/`section_heading`/`page_number`
+   opcionales) sustituye a `list[str]` en
+   `GraphState.retrieved_chunks`. `_format_retrieved_chunks` antepone
+   un aviso inline SOLO cuando `substance_resolution_tier == 3` --
+   mismo patrón que `discussion_line` (instrucción incrustada en el
+   dato del prompt de usuario, sin tocar `NODE_4_GROUNDING_RULES`/
+   `NODE_4_SAFETY_COMMUNICATION_RULES`). `hybrid_retrieval_node`
+   (Nodo 2, sigue `NotImplementedError`) actualizado con un TODO
+   explícito: cuando se implemente, DEBE producir `list[RetrievedChunk]`,
+   nunca strings sueltos.
+
+**Tests nuevos en `tests/test_nodes.py`** (archivo nuevo):
+- Tier 1 con caso real (aspartamo, ADI=40) -- cita con normalidad, sin
+  el aviso de "no hay valor numérico".
+- Tier 2 con caso real (dióxido de titanio, adi_value=None) -- verifica
+  que el texto menciona AMBOS motivos posibles como ejemplos (no como
+  hecho de este caso) e instruye a no asumir.
+- Tier 3 de `_format_retrieved_chunks` (sintético, sin xlsx) -- el
+  aviso de "coincidencia de nombre en el título" aparece solo en el
+  fragmento tier 3, no en tier 1 ni 2.
+- Lista vacía de `retrieved_chunks` sigue explicando que el corpus no
+  está indexado.
+- **19/19 tests pasan** (15 previos de `test_openfoodtox_joins.py` + 4
+  nuevos), ~77s de tiempo total.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El Nodo 2 (`hybrid_retrieval_node`) sigue sin implementar -- el
+  contrato de salida (`list[RetrievedChunk]`) ya está fijado, pero
+  nadie lo produce todavía.
+- El resto del diseño de 3 niveles (`require_adi` como parámetro de
+  `substances_per_dossier()`, agrupación por DOI en vez de título) del
+  pendiente de la sesión anterior sigue sin implementar -- esta sesión
+  se centró en el consumo del tier en el Nodo 4, no en la generación
+  del tier en el indexado.
+- Sin cambios en Nodo 1, servidor MCP, deploy esta sesión.
+
+## 2026-08-17 (continuación 8) — PyPDFLoader vs PyMuPDFLoader, decisión con evidencia
+
+**Contexto:** antes de escribir el chunker, se preguntó si ya se había
+comparado PyPDFLoader vs PyMuPDFLoader sobre el PDF de fosfatos
+(E338-E343-E450, 156 páginas, la Tabla 5a que se rompía con
+`pdftotext`). No se había hecho -- solo diagnóstico con `pdftotext`
+(poppler CLI) en sesiones anteriores, nunca con los loaders de
+`langchain_community` que el pipeline va a usar de verdad. Hecha ahora,
+solo comparación, sin implementar el chunker. `pymupdf` instalado en el
+venv local para la prueba, no añadido a `requirements.txt` todavía.
+
+**Resultado, con medidas concretas, no preferencia teórica:**
+- **Velocidad:** PyMuPDFLoader ~8x más rápido (0,5s vs 4,2s para las
+  156 páginas).
+- **Fidelidad de texto -- diferencia decisiva:** PyPDFLoader inserta un
+  espacio espurio en palabras con ligadura ﬁ/ﬂ del PDF ("scientific" →
+  "scienti ﬁc"). Contado sobre 17 palabras conocidas por el problema:
+  **402 palabras rotas en todo el documento con PyPDFLoader, 0 con
+  PyMuPDFLoader.**
+- **Tabla 5a específicamente:** ninguno de los dos loaders reconstruye
+  la tabla como tabla -- ambos preservan el orden de lectura (7 valores
+  por fila en el mismo orden que los 7 encabezados), pero PyPDFLoader
+  agrupa cada fila en una sola línea (más resistente a que un splitter
+  la corte por la mitad) mientras que PyMuPDFLoader pone cada celda en
+  su propia línea (más expuesto a fragmentación de fila). Este trade-off
+  de layout de tabla queda como problema de estrategia de chunking
+  (chunks grandes alrededor de tablas, o excluirlas del RAG narrativo),
+  no algo que la elección de loader resuelva.
+
+**Decisión: PyMuPDFLoader como loader por defecto.** La fidelidad de
+texto (0 vs 402 palabras rotas) y la velocidad pesan más que la
+desventaja de fragmentación de tablas, que hay que mitigar a nivel de
+chunking de todos modos independientemente del loader. Detalle completo
+en CLAUDE.md, "Hallazgos verificados".
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **No implementado en el pipeline todavía** -- añadir `pymupdf` a
+  `requirements.txt` y usar `PyMuPDFLoader` es tarea de cuando se
+  escriba el chunker, no de esta sesión.
+- La estrategia de chunking alrededor de tablas (excluirlas del RAG
+  narrativo vs. chunks grandes que las mantengan enteras) sigue sin
+  decidir.
+- Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
+  sesión.
+
+## 2026-08-17 (continuación 9) — Tratamiento de tablas en el chunking: Opción A, con evidencia de las tres opciones
+
+**Contexto:** con PyMuPDFLoader ya decidido como loader, se pidió
+recomendación (sin implementar) sobre cómo tratar las tablas del PDF en
+el chunking -- tres opciones sobre la mesa: A) detectar y excluir del
+texto narrativo (Node 4 ya tiene el dato cuantitativo de OpenFoodTox),
+B) extraer aparte con librería especializada (`pdfplumber`/`camelot`),
+C) aceptar la fragmentación confiando en que el contexto narrativo
+alrededor compense. Se pidió explícitamente evidencia, no preferencia
+teórica, y que ninguna opción se descartara por intuición.
+
+**Evidencia 1 -- prevalencia real, no un caso raro:** escaneados los
+161 PDFs con PyMuPDF (~23s). **146/161 (91%)** tienen al menos una
+tabla, mediana de 7 por documento, hasta 23 en aspartamo.
+
+**Evidencia 2 -- qué contienen, y que OpenFoodTox NO las cubre
+(verificado, no asumido):** muestreadas 207 leyendas de tabla en 25
+documentos al azar. Predominan MPLs, especificaciones de pureza,
+grupos de población para exposición, "summary of dietary exposure" y
+-- relevante para este proyecto -- "qualitative evaluation of
+influence of uncertainties on the dietary exposure estimate". Un caso
+(Red 2G, E128) tenía tablas de datos crudos de tumores/BMDL, base de
+la derivación del ADI. `OpenFoodTox` solo aporta el ADI escalar +
+justificación de texto libre -- nada del contenido de estas tablas
+está en los campos estructurados. **El supuesto de partida de la
+Opción A no era automáticamente cierto -- había que comprobarlo.**
+
+**Evidencia 3 -- lo que sí sostiene la Opción A: la conclusión clave
+suele estar ya en prosa en el Abstract (página 1).** Verificado
+directamente en el PDF de fosfatos: el Abstract dice textualmente que
+la exposición "ranged from 251 mg P/person per day in infants to
+1,625... exceeded the proposed ADI for infants, toddlers and other
+children" -- la conclusión de la Tabla 5a (página 42) ya está en la
+página 1. Mismo patrón en el documento de cloruros. Verificado en 2
+documentos, no en el corpus completo, pero consistente con estructura
+estándar de abstract científico.
+
+**Evidencia 4 -- Opción B probada de verdad, no descartada por
+intuición.** Instalado `pdfplumber` (solo venv local, no en
+`requirements.txt`) y ejecutado `extract_tables()` sobre la página de
+la Tabla 5a. Resultado: reconstruye bien pares fila/columna dentro de
+cada bloque, pero **fragmenta la tabla en 4 sub-tablas desconectadas**
+y **pierde silenciosamente la columna "the elderly"** (6 de 7
+columnas, sin ningún aviso de error) -- verificado contra la
+extracción de texto plano de la misma tabla, que sí conserva las 7.
+Con 1.137 tablas de layouts heterogéneos en el corpus, una solución de
+producción exigiría reensamblado + validación por documento, con
+riesgo demostrado (no hipotético) de perder datos en silencio.
+
+**DECISIÓN: Opción A.** No por simplicidad -- porque la conclusión que
+importa para este proyecto sobrevive en el Abstract sin la tabla
+cruda, la Opción B tiene coste real y un fallo silencioso ya
+demostrado, y la Opción C asume una compensación de contexto que en
+la práctica viene de un chunk distinto (el Abstract), no de proximidad
+real a la tabla fragmentada.
+
+**Limitación aceptada explícitamente, no oculta:** se pierde el
+desglose fino por subgrupo poblacional bajo cada escenario de
+exposición -- aceptable para una herramienta de exploración de
+literatura, no para una calculadora de exposición detallada (nunca fue
+el objetivo del proyecto). Documentar en `LIMITATIONS.md` cuando se
+implemente el chunker. Detalle completo, con las 4 evidencias
+desarrolladas, en CLAUDE.md, "Hallazgos verificados".
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **Nada implementado** -- ni la detección/exclusión de bloques de
+  tabla, ni `pymupdf`/`pdfplumber` en `requirements.txt` (ambos solo en
+  el venv local de esta sesión para las pruebas).
+- Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
+  sesión.
+
+**Caso a vigilar anotado a posteriori (continuación 10), no bloqueante:**
+Red 2G (E128) tiene tablas de datos crudos de tumores/BMDL -- base
+PRIMARIA de la derivación del ADI, no un desglose secundario como MPLs
+o exposición. La Evidencia 3 (Abstract restata la conclusión) solo se
+verificó para tablas de exposición, no para este tipo de tabla -- es
+plausible que un Abstract no recoja el mismo nivel de detalle
+dosis-respuesta. **Si se hace QA manual del contenido narrativo del
+Nodo 4 en el futuro, priorizar revisar este caso**
+(`E128_10.2903_j.efsa.2007.515.pdf`) para confirmar si la Opción A deja
+suficiente fundamento para el efecto crítico/NOAEL de esta sustancia.
+Detalle en CLAUDE.md, "Hallazgos verificados".
+
+## 2026-08-17 (continuación 11) — Splitter: `RecursiveCharacterTextSplitter` + `section_heading` vía fuente tipográfica, no vía regex
+
+**Contexto:** con loader (PyMuPDFLoader) y tratamiento de tablas
+(Opción A) ya decididos, se pidió verificar -- contra los mismos 3 PDFs
+de referencia (corto/statement, largo/fosfatos, mediano/cloruros) -- si
+la estructura de secciones es lo bastante consistente como para
+justificar un splitter consciente de estructura, o si
+`RecursiveCharacterTextSplitter` plano basta. Solo verificación, sin
+implementar.
+
+**Intento fallido, probado antes de descartarlo:** regex de encabezados
+numerados sobre el texto plano de PyMuPDF. Un regex de una línea da 0
+coincidencias en los 3 documentos -- `page.get_text()` (lo que expone
+`PyMuPDFLoader`) separa el número del título en líneas distintas
+(`"1.\nIntroduction\n..."`, no `"1. Introduction"`). Ampliando a
+"número solo en su línea" sí aparece estructura real, pero con mucho
+ruido: **725 coincidencias en el documento largo, 229 en el mediano** --
+mayoría falsos positivos de números de página de pie de página y
+artefactos de la tabla de contenidos.
+
+**Señal que sí funciona, verificada en los 3 documentos:** tamaño y
+familia de fuente (vía `page.get_text("dict")`, NO el texto plano)
+distinguen encabezado de cuerpo de forma limpia -- 12pt fuente bold
+para encabezados vs 10-11pt fuente regular para cuerpo, consistente en
+los 3. La familia de fuente (variante bold) es más fiable que el
+tamaño en puntos en solitario (un caso con versalitas hace variar el
+tamaño dentro del mismo encabezado).
+
+**Dos convenciones de encabezado distintas:** el statement corto usa 4
+secciones planas en mayúsculas sin numeración (BACKGROUND/EVALUATION/
+REFERENCES); los dos Scientific Opinion (fosfatos y cloruros) usan
+jerarquía numerada idéntica hasta 4 niveles (`1.1.1.1`, `3.10.3`) --
+misma plantilla EFSA Journal, no casualidad de un documento. Una
+detección basada solo en numeración no cubriría el tipo Statement; la
+señal de fuente sí generaliza a ambas, verificado.
+
+**DECISIÓN:** `RecursiveCharacterTextSplitter` plano para los límites
+de chunk (sin evidencia de que el regex numerado, poco fiable, mejore
+sobre el splitter que ya respeta párrafos/frases). `section_heading`
+como metadato aparte, extraído vía `get_text("dict")` -- relevante para
+este proyecto porque el RAG se apoya en recuperar contenido de
+secciones como "Discussion", no cualquier texto suelto.
+
+**Nota importante para el chunker:** hace falta la API rica de PyMuPDF
+(`get_text("dict")`), NO basta con `PyMuPDFLoader` de
+`langchain_community` (solo expone texto plano, sin fuente) -- exige un
+paso de extracción adicional con PyMuPDF directo, en paralelo al uso
+del loader para el texto que alimenta al splitter. La lógica de
+detección debe cubrir ambas convenciones de encabezado, no solo la
+numerada. Detalle completo en CLAUDE.md, "Hallazgos verificados".
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **Nada implementado** -- ni el splitter, ni la extracción de
+  `section_heading`. Diseño verificado, pendiente de escribir con el
+  resto del chunker.
+- Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
+  sesión.
