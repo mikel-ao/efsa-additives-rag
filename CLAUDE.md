@@ -982,6 +982,74 @@ Pendiente, en orden de menor a mayor incertidumbre:
    La tabla auxiliar E-number -> `substance_uuid` propuesta arriba
    seguiría siendo la solución estructural si se necesita una garantía
    real, no solo "probablemente funciona para casos comunes".
+   - **Variante MÁS ESPECÍFICA de esta misma limitación, diagnosticada
+     con datos reales (sesión 19-ago-2026, caso tocoferol) -- distinta
+     del problema de español/E-numbers de arriba, no la confundas con
+     él:** el LLM del Nodo 1 puede producir un nombre canónico en
+     inglés RAZONABLE y bien normalizado, y aun así no resolver, porque
+     `SUB.ChemicalName` tiene varias filas casi-duplicadas para lo que
+     un humano llamaría "la misma sustancia" -- con prefijos/sufijos
+     que el LLM no tiene forma de adivinar. Caso real verificado con
+     una llamada real a la API (3 preguntas, español e inglés, todas
+     sobre tocoferol): el LLM devuelve consistentemente `"Tocopherol"`
+     (genérico, sin prefijo) -- `substance_uuid_by_name("Tocopherol")`
+     devuelve `None`, porque esa cadena exacta no existe en `SUB`. Pero
+     la sustancia SÍ está en el programa, con contenido real e
+     indexado: de las 7 variantes de nombre que sí existen en `SUB`
+     para tocoferoles, **4 resuelven perfectamente** (`structured_result`
+     completo + 5 `retrieved_chunks` cada una) -- `DL-alpha-tocopherol`,
+     `Tocopherol-rich extract`, `Gamma-tocopherol`, `Delta-tocopherol`,
+     todas apuntando correctamente al dictamen de grupo de 2015 (DOI
+     `10.2903/j.efsa.2015.4247`) -- y 3 no resuelven nada (`beta-tocopherol`,
+     `tocopherols, total`, `Alpha-tocopherol` con mayúscula, sin
+     dictamen vinculado ni chunks). Confirma que NO es un bug de
+     retrieval del Nodo 2 independiente de un fallo del Nodo 3 --
+     ambos fallan a la vez porque comparten la misma causa raíz en el
+     Nodo 1 (`graph/build.py` salta el Nodo 3 y deja `retrieved_chunks`
+     vacío cuando `substance_uuid` no resuelve, ver "Dos caminos de
+     ejecución del grafo" más abajo).
+   - **Fix de mensaje YA APLICADO (mismo día, `graph/nodes.py`,
+     `_format_retrieved_chunks`):** el texto que se mostraba con
+     `retrieved_chunks` vacío afirmaba **"el corpus de PDFs todavía no
+     está indexado"** -- FALSO (67.827 chunks reales, verificado
+     repetidamente en sesiones anteriores) y engañoso sobre la causa
+     real. Corregido a dos mensajes distintos según si
+     `structured_result` también es `None`: si SÍ lo es, "no se ha
+     podido resolver de forma exacta la sustancia mencionada en la
+     pregunta" (el caso de tocoferol, diagnosticado arriba); si
+     `structured_result` NO es `None` (el dictamen vigente sí se
+     resolvió por OpenFoodTox pero esta sustancia concreta no tiene
+     chunks indexados -- causa distinta, no diagnosticada a fondo
+     todavía, ver pendiente más abajo), "no se han encontrado
+     fragmentos narrativos indexados para esta sustancia concreta,
+     aunque sí se resolvió el dictamen vigente". La regla 3 de
+     `NODE_4_GROUNDING_RULES` (el system prompt del Nodo 4) tenía la
+     MISMA causa falsa incrustada -- corregida también, para que el
+     LLM no le siga repitiendo esa explicación inventada al usuario
+     final aunque el dato ya venga bien formateado.
+   - **Diseño futuro propuesto para la resolución en sí, NO
+     implementado -- fallback de coincidencia por substring/prefijo
+     cuando la exacta falla** (ej. si `"Tocopherol"` no resuelve,
+     probar `SUB.ChemicalName` que contenga `"tocopherol"` como
+     substring, case-insensitive): **riesgo real de falsos positivos
+     que hay que resolver con cuidado antes de tocarlo, no es un
+     cambio trivial.** Un substring genérico puede casar con MÁS de
+     una fila (como ya pasa aquí: 7 filas contienen "tocopherol", con
+     resultados MUY distintos -- 4 resuelven bien, 3 no resuelven
+     nada, y no hay ninguna señal en el propio nombre para elegir
+     automáticamente cuál de las 7 es "la correcta" para una pregunta
+     genérica del usuario). Un fallback ingenuo (ej. "coge la primera
+     coincidencia") podría resolver a una fila SIN dictamen vinculado
+     igual de fácil que a una con él, sustituyendo un fallo visible
+     (`None`, mensaje honesto) por un resultado incorrecto silencioso
+     -- peor que el problema actual. Cualquier implementación futura
+     necesita, como mínimo: (a) desambiguar entre múltiples matches de
+     substring en vez de coger el primero a ciegas, (b) preferir filas
+     que SÍ tengan un dictamen vinculado sobre las que no, y (c) una
+     batería de pruebas sobre varios casos multi-variante reales (no
+     solo tocoferol) antes de confiar en ello -- ninguno de los tres
+     puntos está diseñado todavía, esto es solo el problema y la idea
+     de dirección, no una propuesta lista para implementar.
 3. **Integrar `END_SUM.Discussion.Discussion` en `OpinionReference`**,
    con el heurístico de detección de boilerplate ya validado en datos
    (ver "Hallazgos verificados": `len < 280` caracteres O duplicado

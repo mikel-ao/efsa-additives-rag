@@ -53,7 +53,7 @@ from efsa_rag.graph.nodes import (
     hybrid_retrieval_node,
 )
 from efsa_rag.ingestion.embedding_model import load_embedding_model
-from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore
+from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore, OpinionReference
 
 CHROMA_PERSIST_DIR = Path(__file__).parent.parent / "data" / "chroma"
 CHROMA_COLLECTION_NAME = "efsa_reevaluation_chunks"
@@ -162,9 +162,35 @@ def test_format_retrieved_chunks_flags_tier3_with_confidence_caveat():
     assert "coincidencia de nombre en el título" in tier3_block
 
 
-def test_format_retrieved_chunks_empty_list_explains_missing_corpus():
-    assert "no está indexado" in _format_retrieved_chunks(None)
-    assert "no está indexado" in _format_retrieved_chunks([])
+def test_format_retrieved_chunks_empty_and_no_structured_result_blames_resolution():
+    """Caso diagnosticado con datos reales (sesión 19-ago-2026, tocoferol):
+    cuando NI structured_result NI retrieved_chunks tienen nada, la causa
+    real es que el Nodo 1 no resolvió `substance_uuid` de forma exacta --
+    nunca que el corpus de PDFs no esté indexado (67.827 chunks reales).
+    Afirmar eso sería una causa falsa, ver CLAUDE.md.
+    """
+    for chunks in (None, []):
+        text = _format_retrieved_chunks(chunks, structured_result=None)
+        assert "no está indexado" not in text
+        assert "resolver de forma exacta la sustancia" in text
+
+
+def test_format_retrieved_chunks_empty_but_structured_result_present_differs():
+    """Causa distinta del caso de arriba -- el dictamen vigente SÍ se
+    resolvió por OpenFoodTox, así que el mensaje no debe culpar a la
+    resolución de sustancia (sería igual de engañoso en la dirección
+    contraria)."""
+    structured_result = OpinionReference(
+        dossier_uuid="dossier-1",
+        date_of_evaluation=None,
+        title="Re-evaluation of some additive",
+        doc_type="EFSA opinion",
+        doi=None,
+    )
+    text = _format_retrieved_chunks([], structured_result=structured_result)
+    assert "no está indexado" not in text
+    assert "resolver de forma exacta la sustancia" not in text
+    assert "no se han encontrado fragmentos narrativos indexados" in text
 
 
 # --------------------------------------------------------------------- #

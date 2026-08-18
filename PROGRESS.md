@@ -3871,4 +3871,159 @@ hicieron determinista.
   disponible sin acceso directo a una cuenta de Streamlit Cloud, pero
   no es 100% idéntica al entorno de build real de Streamlit
   Community Cloud (que podría tener sus propias particularidades no
+
+## 2026-08-19 (continuación 25) — mensaje engañoso "el corpus de PDFs todavía no está indexado" diagnosticado con tocoferol y corregido; hallazgo nuevo documentado (más específico que el pendiente #2 general)
+
+**Contexto:** se reportó el mismo texto engañoso visto antes con BHT
+(sesión sin registro en este repo -- ver la aclaración hecha al
+usuario en el propio hilo, no hay ninguna entrada previa de BHT ni en
+`PROGRESS.md` ni en `CLAUDE.md`, y el "Grupo B" ya documentado en este
+proyecto se refiere a Sunset Yellow FCF, no a BHT) apareciendo también
+con tocoferol. A diferencia de BHT (que el usuario describe como
+genuinamente ajeno al programa, sin verificación posible desde aquí),
+tocoferoles (E306-309) SÍ es un aditivo real del programa, ya
+documentado con contenido narrativo mixto en el hallazgo de
+`Discussion.Discussion`. Pedido explícito: diagnosticar la causa antes
+de aplicar cualquier fix de texto.
+
+**Diagnóstico, con datos reales (xlsx + Chroma ya presentes en esta
+máquina, más una llamada real a la API de DeepSeek para el Nodo 1):**
+`structured_result` SÍ es `None` para tocoferol, igual que el síntoma
+de BHT -- pero **NO es un fallo de retrieval del Nodo 2 independiente
+de un fallo del Nodo 3**. Es una única causa raíz en el Nodo 1: el LLM
+normaliza consistentemente cualquier pregunta sobre tocoferol al
+nombre genérico `"Tocopherol"` (probado con 3 preguntas reales,
+español e inglés) -- pero esa cadena exacta NO existe en
+`SUB.ChemicalName`, que solo tiene variantes con prefijo/sufijo
+(`DL-alpha-tocopherol`, `Tocopherol-rich extract`, `Alpha-tocopherol`
+con mayúscula, `beta-tocopherol`, `Gamma-tocopherol`,
+`Delta-tocopherol`, `tocopherols, total`). De esas 7, **4 resuelven
+perfectamente** (dictamen de grupo de 2015, DOI
+`10.2903/j.efsa.2015.4247`, 5 chunks cada una en Chroma) y 3 no
+resuelven nada -- confirmando que el contenido SÍ existe e SÍ está
+indexado, solo que colgado de un UUID distinto al que el Nodo 1 nombró.
+Ambos nodos (2 y 3) fallan a la vez porque comparten la misma causa:
+`graph/build.py` salta el Nodo 3 y deja `retrieved_chunks` vacío
+cuando `substance_uuid` no resuelve.
+
+**Fix de mensaje aplicado, tras el diagnóstico (`graph/nodes.py`):**
+- `_format_retrieved_chunks` gana un parámetro nuevo,
+  `structured_result: OpinionReference | None = None` -- el mensaje
+  para chunks vacío ahora se bifurca: si `structured_result` también
+  es `None`, "no se ha podido resolver de forma exacta la sustancia
+  mencionada en la pregunta" (el caso de tocoferol); si
+  `structured_result` SÍ existe (causa distinta, no diagnosticada a
+  fondo -- ver pendiente abajo), "no se han encontrado fragmentos
+  narrativos indexados para esta sustancia concreta, aunque sí se
+  resolvió el dictamen vigente". Ninguno de los dos mensajes afirma ya
+  que "el corpus no está indexado" -- ninguna rama lo hacía cierto: el
+  corpus tiene 67.827 chunks reales, verificado repetidamente.
+- `_build_user_prompt` actualizado para pasar `structured_result` a
+  `_format_retrieved_chunks` (antes solo recibía `chunks`).
+- **Regla 3 de `NODE_4_GROUNDING_RULES` (el system prompt del Nodo 4)
+  tenía la MISMA causa falsa incrustada** ("porque el corpus de PDFs
+  todavía no está indexado") -- corregida también, para que el LLM no
+  le siga inventando esa explicación al usuario final aunque el dato
+  ya venga bien formateado desde el paso anterior.
+- Test viejo (`test_format_retrieved_chunks_empty_list_explains_missing_corpus`,
+  aseraba el texto ahora falso) sustituido por dos tests nuevos, uno
+  por cada rama del mensaje -- `test_format_retrieved_chunks_empty_and_no_structured_result_blames_resolution`
+  y `test_format_retrieved_chunks_empty_but_structured_result_present_differs`.
+  Suite completa: **31 passed, 2 skipped** (antes 30 -- neto +1 por la
+  división del test viejo en dos).
+
+**Documentado en `CLAUDE.md`** (pendiente #2, como sub-punto más
+específico que el problema general de español/E-numbers, sin
+confundirlos): el caso de tocoferol completo (las 4 variantes que
+resuelven, las 3 que no), el fix de mensaje ya aplicado, y un diseño
+futuro de fallback por substring/prefijo **propuesto pero NO
+implementado**, con el riesgo de falsos positivos anotado
+explícitamente (un substring genérico como "tocopherol" casa con las
+7 filas, 4 buenas y 3 sin dictamen vinculado -- sin señal para elegir
+automáticamente, un fallback ingenuo podría sustituir un fallo visible
+por un resultado incorrecto silencioso, peor que el problema actual).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El caso "`structured_result` existe pero `retrieved_chunks` está
+  vacío" (la segunda rama del mensaje nuevo) no se diagnosticó a
+  fondo con un caso real -- se implementó el mensaje distinto por
+  coherencia (no reutilizar el mensaje de "sustancia no resuelta"
+  cuando sí se resolvió), pero no se investigó si ese caso ocurre de
+  verdad en el corpus actual ni por qué.
+- El diseño de fallback por substring/prefijo sigue sin implementar,
+  a propósito -- ver el riesgo de falsos positivos documentado en
+  `CLAUDE.md`, necesita desambiguación entre matches múltiples y
+  preferencia por filas con dictamen vinculado antes de ser seguro.
+- La premisa de BHT del usuario (mensaje engañoso visto antes,
+  "Grupo B... genuinamente ajeno al programa") no se pudo verificar
+  desde este repo -- no hay ningún registro previo de BHT en
+  `PROGRESS.md`/`CLAUDE.md`, y el "Grupo B" documentado aquí es
+  Sunset Yellow FCF. Posible investigación de otra sesión sin
+  documentar, o confusión -- sin resolver, se lo señalé al usuario en
+  el propio hilo pero no se investigó más.
+- No verificado con un cliente MCP real ni con el propio Streamlit
+  Cloud -- solo con el mismo método de contenedor Docker usado toda
+  esta semana para simular Linux. Sigue siendo la mejor aproximación
+  disponible sin acceso directo a una cuenta de Streamlit Cloud, pero
+  no es 100% idéntica al entorno de build real de Streamlit
+  Community Cloud (que podría tener sus propias particularidades no
   reproducidas aquí).
+
+## 2026-08-19 (continuación 26) — README: sección "Alcance" nueva con cifras exactas (315 elegibles, verificado contra fuente EFSA real) + "Estado actual" desactualizado corregido
+
+**Contexto:** se pidió revisar si el `README.md` deja claro el alcance
+del proyecto (aditivos en reevaluación bajo Reglamento 257/2010, ~315
+elegibles, 161 dictámenes únicos indexados) para alguien sin contexto
+previo, y añadir una sección clara con cifras exactas si no era el
+caso. No lo era -- el README no mencionaba ninguna cifra de alcance.
+
+**Verificación antes de escribir, no dado por bueno:** la cifra "~315
+elegibles" del pedido **no está documentada en ningún sitio de este
+repo** (`CLAUDE.md`, `PROGRESS.md`, `docs/` -- comprobado con grep, sin
+ningún resultado). Antes de escribirla en un README público como
+"cifra exacta, sin redondear", se verificó contra una fuente primaria
+real: `WebFetch` a la página oficial de EFSA
+(`https://www.efsa.europa.eu/en/topics/topic/food-additives`) --
+confirma textualmente "the 315 food additives that were approved in
+the EU before 20 January 2009" -- cifra real del programa regulatorio
+(no derivada del xlsx de OpenFoodTox de este proyecto, es el universo
+legal completo, publicados y pendientes de evaluación). Las otras
+cifras del README sí vienen de datos ya verificados en sesiones
+anteriores (`CLAUDE.md`): 162 dictámenes únicos, 161 PDFs únicos
+(162 menos 1 duplicado real por errata de título, sacarina), 67.827
+fragmentos en Chroma, 247 sustancias con enlace estructural resoluble.
+
+**Sección "## Alcance" añadida** (README.md, antes de "## Estado
+actual" y "## Setup", justo después de la intro) -- las 4 cifras con
+su unidad de conteo explícita (aditivos elegibles / dictámenes /
+PDFs+fragmentos / sustancias), con una nota explícita de que NO se
+conflacionan entre sí (dictámenes ≠ PDFs ≠ sustancias, unidades
+distintas -- se evitó a propósito calcular un cociente tipo "161 de
+315" porque mezclaría documento con sustancia, imprecisión que este
+proyecto ya evita en `CLAUDE.md` en varios sitios).
+
+**"## Estado actual" también corregida, tras confirmación explícita
+del usuario (`AskUserQuestion`) -- estaba muy desactualizada, no era
+parte del pedido original pero se señaló y el usuario pidió
+arreglarla:** decía "Scaffold inicial" y listaba como "Pendiente"
+cosas que llevan implementadas y probadas desde sesiones anteriores
+(descarga de PDFs, chunking/embeddings, conexión real al LLM, servidor
+MCP) -- reescrita para reflejar el grafo de 4 nodos completo y
+ejecutado de extremo a extremo, con referencia a `CLAUDE.md` para el
+detalle. **Hallazgo colateral menor:** la sección apuntaba a
+`docs/ROADMAP.md`, que no existe en el repo (verificado con `find`) --
+corregido, ya no apunta a un archivo inexistente.
+
+**Verificado sin regresiones:** suite completa tras los cambios (solo
+Markdown, sin código Python tocado): **31 passed, 2 skipped**, sin
+cambios respecto a la sesión anterior.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- La sección "Deploy en Streamlit Community Cloud" del README sigue
+  sin mencionar el fix del `ModuleNotFoundError: No module named
+  'efsa_rag'` de la sesión anterior (continuación 24) -- no se pidió
+  actualizarla en esta sesión, sigue siendo internamente correcta
+  (los pasos no cambiaron), solo no refleja ese hallazgo reciente.
+- Ninguna otra sección del README se auditó más allá de "Alcance" y
+  "Estado actual" -- "Setup" y "Deploy" no se revisaron por
+  desactualización en esta sesión.

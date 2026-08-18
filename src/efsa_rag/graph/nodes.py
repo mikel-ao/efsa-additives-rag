@@ -71,11 +71,13 @@ comunicación de riesgo de abajo):
 2. Cita siempre el dictamen exacto -- título y, si está disponible, DOI /
    identificador persistente -- en el que se basa tu respuesta.
 
-3. Si el CONTEXTO no incluye fragmentos narrativos (porque el corpus de
-   PDFs todavía no está indexado), dilo explícitamente y limita la
-   respuesta a los metadatos del dictamen vigente (cuál es, de qué fecha,
-   con qué identificador) en vez de simular que conoces el contenido
-   completo del documento.
+3. Si el CONTEXTO no incluye fragmentos narrativos, dilo explícitamente
+   y limita la respuesta a los metadatos del dictamen vigente (cuál es,
+   de qué fecha, con qué identificador) en vez de simular que conoces
+   el contenido completo del documento -- usa la explicación que te
+   da el propio CONTEXTO para ese caso, no asumas ni inventes una causa
+   distinta (en particular, nunca digas que el corpus de PDFs no está
+   indexado -- no es cierto).
 
 4. Si no se pudo determinar un dictamen vigente para la sustancia con los
    datos estructurados disponibles, dilo explícitamente en vez de
@@ -446,11 +448,34 @@ def _format_structured_result(result: OpinionReference | None) -> str:
     )
 
 
-def _format_retrieved_chunks(chunks: list[RetrievedChunk] | None) -> str:
+def _format_retrieved_chunks(
+    chunks: list[RetrievedChunk] | None, structured_result: OpinionReference | None = None
+) -> str:
     if not chunks:
+        if structured_result is None:
+            # Caso diagnosticado con datos reales (sesión 19-ago-2026,
+            # caso tocoferol -- ver CLAUDE.md, pendiente sobre nombre
+            # genérico del LLM vs. variantes con prefijo/sufijo en
+            # `SUB.ChemicalName`): cuando NINGUNO de los dos nodos
+            # tiene nada, la causa real casi siempre es que el Nodo 1
+            # no resolvió `substance_uuid` -- NUNCA que el corpus no
+            # esté indexado (67.827 chunks reales, verificado). Afirmar
+            # "el corpus no está indexado" es una causa falsa y
+            # engañosa -- no la repitas aunque parezca inofensiva.
+            return (
+                "(vacío -- no se ha podido resolver de forma exacta la "
+                "sustancia mencionada en la pregunta; no hay fragmentos "
+                "narrativos disponibles para esta consulta)"
+            )
+        # `structured_result` SÍ existe pero no hay chunks -- causa
+        # distinta (el dictamen vigente se resolvió por la cadena de
+        # OpenFoodTox, pero esta sustancia concreta no tiene fragmentos
+        # indexados en Chroma) -- no reutilices el mensaje de arriba,
+        # sería igual de engañoso en la dirección contraria.
         return (
-            "(vacío -- el corpus de PDFs todavía no está indexado; no hay "
-            "fragmentos narrativos disponibles para esta consulta)"
+            "(vacío -- no se han encontrado fragmentos narrativos "
+            "indexados para esta sustancia concreta, aunque sí se "
+            "resolvió el dictamen vigente por datos estructurados)"
         )
     parts = []
     for i, chunk in enumerate(chunks):
@@ -475,8 +500,9 @@ def _format_retrieved_chunks(chunks: list[RetrievedChunk] | None) -> str:
 def _build_user_prompt(state: GraphState) -> str:
     query = state.get("user_query", "")
     substance = state.get("substance_name") or "(no identificada explícitamente)"
-    structured = _format_structured_result(state.get("structured_result"))
-    chunks = _format_retrieved_chunks(state.get("retrieved_chunks"))
+    structured_result = state.get("structured_result")
+    structured = _format_structured_result(structured_result)
+    chunks = _format_retrieved_chunks(state.get("retrieved_chunks"), structured_result)
 
     return f"""\
 Pregunta del usuario: {query}

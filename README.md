@@ -7,18 +7,73 @@ Documentación completa (objetivo, audiencia, arquitectura, stack, roadmap,
 limitaciones conocidas): [`docs/efsa-rag-proyecto.html`](docs/efsa-rag-proyecto.html)
 -- ábrelo en el navegador.
 
+## Alcance
+
+Este proyecto cubre **exclusivamente** aditivos alimentarios en reevaluación
+bajo el Reglamento (UE) n.º 257/2010 -- no pienso animal, no aromas, no
+contaminantes, ningún otro programa regulatorio de EFSA.
+
+- **315** aditivos alimentarios son elegibles para este programa: los
+  aprobados en la Unión Europea antes del 20 de enero de 2009 (fuente:
+  [EFSA, "Food additives"](https://www.efsa.europa.eu/en/topics/topic/food-additives)
+  -- "the 315 food additives that were approved in the EU before 20 January
+  2009").
+- **162** dictámenes únicos identifica el corpus de este proyecto dentro de
+  ese programa (filtro `Domain.FoodDomain == 'food additives'` + patrón de
+  título de reevaluación, más rescate de dictámenes mal etiquetados con otro
+  dominio -- ver `CLAUDE.md`, "Hallazgos verificados"). Es un corpus de
+  trabajo, **no validado al 100 % contra una lista oficial cerrada de
+  EFSA** -- el programa sigue activo (hay calls for data en curso no
+  cubiertas todavía: ribonucleótidos E 626-635, ácido glucónico E 574-579,
+  aditivos en forma gaseosa).
+- **161** de esos 162 dictámenes corresponden a PDFs únicos ya descargados,
+  troceados e indexados (162 menos 1 duplicado real por errata de título --
+  el caso de sacarina) -- **67.827 fragmentos narrativos** en el índice de
+  retrieval (Chroma), sobre 161/161 PDF procesados sin errores.
+- **247** sustancias del corpus tienen un enlace estructural resoluble a un
+  dictamen vigente (la unidad comparable con las 315 elegibles: sustancia,
+  no documento -- un solo dictamen puede cubrir varias sustancias a la vez,
+  ver `CLAUDE.md`).
+
+Estas cifras no se conflacionan entre sí a propósito: "dictámenes",
+"PDFs" y "sustancias" son unidades de conteo distintas en este proyecto
+-- ver `CLAUDE.md` si necesitas la cadena de joins exacta detrás de cada
+una.
+
 ## Estado actual
 
-Scaffold inicial. Lógica ya verificada e implementada:
-- `src/efsa_rag/ingestion/openfoodtox.py` -- cadena de joins determinista
-  para el Nodo 3 (vigencia), verificada con el caso aspartamo (E 951).
-- `src/efsa_rag/graph/nodes.py` -- contratos de los 4 nodos LangGraph,
-  con la restricción de comunicación de riesgo del Nodo 4 ya fijada.
-- `src/efsa_rag/ui/app.py` -- UI Streamlit con candado de refresco 24h.
+Grafo completo implementado y ejecutado de extremo a extremo (Nodo 1 --
+extracción de entidad -> Nodo 2 -- retrieval híbrido -> Nodo 3 --
+verificación de vigencia -> Nodo 4 -- generación), probado con
+consultas reales, no solo con mocks:
+- `src/efsa_rag/ingestion/openfoodtox.py` -- cadena de joins
+  determinista para ADI/TDI, vigencia y resolución de sustancias por
+  dossier, verificada contra el xlsx real de OpenFoodTox 3.0.
+- `src/efsa_rag/ingestion/pdf_chunking.py` +
+  `src/efsa_rag/ingestion/chroma_index.py` -- los 161 PDFs del corpus
+  troceados, embebidos (`sentence-transformers`, backend ONNX int8) e
+  indexados en Chroma (ver "Alcance" arriba para las cifras exactas).
+- `src/efsa_rag/graph/nodes.py` + `src/efsa_rag/graph/build.py` -- los
+  4 nodos LangGraph conectados y compilados, incluida la restricción
+  de comunicación de riesgo del Nodo 4 (el ADI nunca se redacta como
+  umbral de toxicidad).
+- `src/efsa_rag/mcp/server.py` -- servidor MCP con dos herramientas
+  (`search_efsa_opinion`, `get_reevaluation_status`) -- probado en
+  aislamiento, todavía no con un cliente MCP real (Claude Desktop u
+  otro).
+- `src/efsa_rag/ui/app.py` -- demo Streamlit: candado de refresco 24h,
+  límites de consulta por presupuesto diario, y descarga de los datos
+  pesados desde MEGA S4 en el arranque (ver "Deploy" más abajo).
 
-Pendiente (ver docs/ -> ROADMAP.md): QA final del corpus, descarga de
-PDFs, pipeline de chunking/embeddings, conexión real al LLM (DeepSeek),
-servidor MCP.
+Pendiente (detalle completo y prioridad real en `CLAUDE.md`, no en
+ningún `ROADMAP.md` -- ese archivo no existe en este repo): QA del
+corpus de 162 dictámenes contra las calls for data activas, resolución
+más robusta de nombre de sustancia en el Nodo 1 (español, E-numbers, y
+variantes con prefijo/sufijo del mismo nombre -- mitigado
+parcialmente, sin cerrar), detección de ambigüedad en el Nodo 3
+(diferida a propósito, 0 casos ambiguos detectados sobre 247 sustancias
+hasta hoy), y el primer deploy real en Streamlit Community Cloud (ver
+el riesgo de memoria documentado en la sección de deploy).
 
 ## Setup
 
