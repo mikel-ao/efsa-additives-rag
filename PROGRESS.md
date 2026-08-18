@@ -3604,3 +3604,168 @@ end-to-end con descarga real de arriba.
   porque ahí las credenciales llegan vía "Secrets"/`os.environ`
   directamente, sin pasar por `.env` -- pero no verificado con un
   deploy real todavía, ver pendiente de la entrada anterior).
+
+## 2026-08-19 (continuación 23) — `requirements.txt` con environment markers para el pin `torch+cpu` (solo Linux); verificado de verdad que la instalación no falla en Linux, no solo revisado el texto
+
+**Contexto:** antes del primer intento de deploy real, se pidió
+verificar que `requirements.txt` -- con el pin `torch==2.13.0+cpu`
+(ver "Decisiones de arquitectura ya tomadas") -- instala sin fallos en
+un entorno Linux limpio, como el que usa Streamlit Community Cloud.
+Motivo directo: en esta misma máquina (macOS), la línea llevaba
+comentada (`#torch==2.13.0+cpu`) desde antes de esta sesión -- porque
+el pin `+cpu` no tiene wheels para macOS en
+`download.pytorch.org/whl/cpu`, un `pip install -r requirements.txt`
+limpio en Mac fallaba con "no matching distribution" hasta comentarla
+a mano. Comentarla a mano es justo el riesgo que ya advertía el propio
+comentario del archivo ("depender de que alguien lo recuerde a mano en
+cada entorno nuevo") -- si alguien reproducía ese mismo gesto antes de
+desplegar en Linux, el pin quedaría desactivado también ahí, donde SÍ
+hace falta.
+
+**Fix real -- environment markers (PEP 508), no comentar/descomentar a
+mano:**
+```
+torch==2.13.0+cpu ; sys_platform == "linux"
+torch ; sys_platform != "linux"
+```
+`pip` evalúa el marcador de cada línea contra el intérprete que
+ejecuta la instalación -- en Linux (deploy) se aplica la primera
+línea, pinned a `+cpu`; en cualquier otro sistema (Mac/Windows de
+desarrollo) se aplica la segunda, sin pin, dejando que pip resuelva el
+build por defecto de esa plataforma. Ningún entorno necesita ya que
+alguien recuerde tocar el archivo.
+
+**Hallazgo no obvio, verificado antes de confiar en él -- `pip
+download --platform ... --python-version ...` NO simula environment
+markers.** Primer intento de verificación: `pip download -r
+requirements.txt --platform manylinux_2_28_x86_64 --python-version 3.12
+--implementation cp --abi cp312 --only-binary=:all:` ejecutado en el
+Mac. El log lo dice explícitamente: `Ignoring torch: markers
+'sys_platform == "linux"' don't match your environment` -- pip evalúa
+los marcadores con el **intérprete local** que ejecuta el comando
+(`sys.platform` de macOS), no con la plataforma pasada en `--platform`
+(que solo afecta qué *wheels* se consideran compatibles, no la
+evaluación de marcadores del propio `requirements.txt`). Con este
+método, el simulacro seleccionó la línea "else" (la de Mac, sin pin) y
+por pura coincidencia encontró un wheel Linux compatible para ella
+igualmente (porque esa línea no tiene versión fijada) -- **eso NO
+demuestra que la línea pinneada de Linux sea alcanzable**, así que no
+sirve como prueba de la corrección real. Además, con las versiones
+sueltas de `langchain>=0.3`/`langgraph>=0.2` (ver hallazgo aparte más
+abajo), este intento entró en un backtracking masivo del resolver de
+pip (cientos de versiones de `langsmith`/`langchain-core` probadas)
+sin converger en tiempo razonable -- abortado manualmente tras
+confirmar que no iba a ser una vía de verificación fiable.
+
+**Verificación real, con Docker (Desktop no estaba arrancado, se
+inició para esto -- `open -a Docker`, sigue corriendo tras la
+sesión):** contenedor `python:3.12-slim` real (Debian, Linux genuino,
+`sys.platform` == `"linux"` de verdad, confirmado imprimiéndolo antes
+de instalar) montando el repo de solo lectura, `pip install --dry-run
+-r requirements.txt`. Resultado limpio en ~35 s, sin backtracking
+problemático esta vez: `Ignoring torch: markers 'sys_platform !=
+"linux"' don't match your environment` (ignora correctamente la línea
+de Mac) + `Collecting torch==2.13.0+cpu (from -r requirements.txt
+(line 43))` (aplica la línea pinneada) + termina con `Would install
+...` listando el plan completo de instalación, **`torch-2.13.0+cpu`
+incluido y ningún paquete `nvidia-*-cu12`** (confirma que no se coló
+el build CUDA pesado que este pin existe precisamente para evitar).
+Nota aparte, no bloqueante: el contenedor era `arm64` (Apple Silicon
+vía Docker Desktop), no `x86_64` como el host real de Streamlit Cloud
+-- la existencia del wheel `+cpu` para `x86_64`/cp312 ya se había
+confirmado por separado con un `pip download torch==2.13.0+cpu
+--platform manylinux_2_28_x86_64 --python-version 3.12 --implementation
+cp --abi cp312 --no-deps` dirigido (wheel real descargado:
+`torch-2.13.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl`, 191,8 MB) --
+**la etiqueta de plataforma correcta es `manylinux_2_28`, NO
+`manylinux2014`/`manylinux_2_17`/`manylinux_2_31`/`manylinux_2_34`**
+(las 4 probadas y descartadas antes de dar con la buena) -- relevante
+si en el futuro se cambia de versión de torch y hay que volver a
+localizar el wheel correcto.
+
+**Hallazgo colateral, no buscado, real y con relevancia para el
+deploy -- `langchain>=0.3` y `langgraph>=0.2` están pinneados
+demasiado sueltos para la fecha actual, riesgo de build lento/con
+timeout en el deploy real:** en el primer intento de simulación (Mac,
+antes de descartarlo por el problema de markers), pip entró en
+backtracking severo -- cientos de versiones de `langsmith` y
+`langchain-core` descargadas y descartadas una a una, sin converger en
+varios minutos, por el rango combinatorio enorme que dejan estos dos
+`>=` sin cota superior combinados con sub-dependencias que sí fijan
+rangos estrechos (ej. `mcp>=2.0`). **En el intento Docker SÍ convergió
+limpio en ~35 s** -- así que no es un fallo garantizado, pero el
+comportamiento no fue reproducible entre los dos intentos (mismo
+archivo, condiciones de red/caché de índice distintas), lo cual en sí
+mismo es la señal de riesgo: un resolver que a veces tarda segundos y
+a veces entra en backtracking de varios minutos no es fiable de cara a
+un build de deploy con límite de tiempo. **No implementado ningún fix
+en esta sesión** (no se pidió, y acotar versiones sin evidencia de qué
+rango es seguro sería una decisión a la ligera) -- queda como
+candidato a revisar antes del primer deploy real si el build tarda
+sospechosamente o falla por timeout: la mitigación estándar sería
+acotar `langchain`/`langgraph` con un techo de versión mayor
+(`<2.0`/`<2.0`) en vez de dejarlos abiertos, no distinto de por qué
+`langchain-core`/`langgraph-checkpoint` etc. ya vienen con techo en
+sus propios metadatos de dependencia.
+
+**No se corrió la suite de tests en esta sesión** -- el cambio es solo
+de `requirements.txt` (metadatos de instalación), no de código
+Python; no hay ningún test que ejercite el propio archivo de
+requirements.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El riesgo de backtracking del resolver de pip con
+  `langchain`/`langgraph` sin techo de versión, arriba -- no
+  investigado a fondo, solo observado una vez cada comportamiento
+  (rápido en Docker, lento/sin converger en el intento vía `pip
+  download --platform` en Mac, aunque ese segundo intento tiene la
+  variable de confusión adicional del problema de markers).
+- Docker Desktop quedó arrancado en esta máquina tras esta sesión (se
+  iba a necesitar para verificar esto y no estaba corriendo) -- no
+  cerrado a propósito, por si se quiere reutilizar para otra
+  verificación pronto; el usuario puede cerrarlo si no lo necesita.
+- Sigue pendiente el primer intento de deploy real en Streamlit
+  Community Cloud (ver pendiente #8, sin cambios de fondo aquí más
+  allá de esta verificación previa).
+
+### Mismo día -- CERRADO: `langchain`/`langgraph`/`langchain-community`/`langchain-text-splitters` fijados a versión exacta, re-verificado en Docker
+
+**Fix:** las 4 líneas pasaron de `>=` sin techo a versión exacta,
+tomando el valor que el propio resolver de pip había elegido en la
+corrida Docker que convergió limpio (no versiones "más nuevas"
+elegidas a mano, no adivinadas):
+```
+langchain==1.3.15
+langchain-community==0.4.2
+langchain-text-splitters==1.1.2
+langgraph==1.2.11
+```
+
+**Re-verificado con el mismo método (Docker, contenedor
+`python:3.12-slim` real, `pip install --dry-run -r requirements.txt`,
+seguido en vivo línea a línea mientras corría, no solo revisado el
+resultado final):** resolvió de principio a fin sin ningún episodio de
+backtracking -- ni siquiera el ajuste puntual de `starlette` (una
+única alternativa entre streamlit/mcp, no una tormenta de docenas de
+versiones) llegó a acercarse al patrón observado antes con las
+versiones sueltas. `exit code 0`, **~1 min en total** (incluye
+arranque del contenedor + `pip install --upgrade pip` + resolución
+completa) -- frente a los varios minutos sin converger del intento
+anterior con los mismos paquetes sin fijar. El plan final `Would
+install ...` es idéntico en el conjunto de paquetes al de la corrida
+anterior (mismas 155 líneas, mismas versión de cada paquete,
+`torch-2.13.0+cpu` incluido, sin ningún `nvidia-*-cu12`) -- confirma
+que fijar la versión no cambió NADA del resultado de resolución, solo
+eliminó la ambigüedad que causaba el backtracking.
+
+**No se corrió la suite de tests** (mismo motivo que la entrada
+anterior -- cambio solo de metadatos de `requirements.txt`, sin
+código Python tocado).
+
+**Pendiente:** sigue sin decidirse si conviene fijar también el resto
+de paquetes con `>=` sin techo (`pandas`, `chromadb`, `openai`, `mcp`,
+`streamlit`, `boto3`, etc.) -- no se ha observado backtracking
+problemático en ninguno de ellos hasta ahora (el problema fue
+específico a langchain/langgraph por su árbol de sub-dependencias
+compartidas), así que no se ha tocado nada más sin evidencia de que
+haga falta.

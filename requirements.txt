@@ -4,9 +4,21 @@ openpyxl>=3.1
 requests>=2.32
 
 # RAG
-langchain>=0.3
-langchain-community>=0.3
-langchain-text-splitters>=0.3
+# Versiones EXACTAS, no >= (sesión 18-ago-2026, continuación 23) --
+# fijadas a las que el resolver de pip eligió en la corrida Docker que
+# convergió limpio en ~35s (ver PROGRESS.md), no adivinadas ni
+# "las últimas" a mano. Con >= sin techo, un intento anterior de
+# simulación (mismo día, entorno distinto) entró en backtracking
+# severo del resolver -- cientos de versiones de langsmith/
+# langchain-core probadas sin converger en varios minutos -- riesgo
+# real de timeout en el build del deploy. Fijar versión exacta elimina
+# la ambigüedad que causaba ese backtracking sin tener que acotar con
+# un rango arbitrario sin evidencia. Revisar y volver a resolver a
+# mano (no solo subir el número) si en el futuro hace falta una
+# versión más nueva por alguna dependencia concreta.
+langchain==1.3.15
+langchain-community==0.4.2
+langchain-text-splitters==1.1.2
 pypdf>=4.3
 # loader por defecto para el chunker (ver ingestion/pdf_chunking.py) --
 # decidido con evidencia sobre PyPDFLoader (0 vs 402 palabras rotas en
@@ -28,8 +40,20 @@ pymupdf>=1.28
 # a mano (útil para reindexados rápidos, ver CLAUDE.md) y no se
 # reinstala solo por este pin; solo un `pip install -r requirements.txt`
 # limpio (como el que corre el deploy) se lleva el build CPU-only.
+#
+# Environment marker en vez de comentar/descomentar a mano (sesión
+# 18-ago-2026, portátil nuevo macOS): el pin `+cpu` solo tiene wheels
+# para Linux/Windows en download.pytorch.org/whl/cpu, NO para macOS --
+# un `pip install -r requirements.txt` limpio en Mac fallaba con "no
+# matching distribution" hasta que se comentó la línea a mano, lo cual
+# a su vez dejaba el pin desactivado por completo (también en el
+# deploy real Linux, donde SÍ hace falta) si alguien olvidaba
+# descomentarla antes de desplegar. `sys_platform == "linux"` hace que
+# pip evalúe y aplique cada línea por plataforma automáticamente, sin
+# intervención manual en ningún entorno.
 --extra-index-url https://download.pytorch.org/whl/cpu
-#torch==2.13.0+cpu
+torch==2.13.0+cpu ; sys_platform == "linux"
+torch ; sys_platform != "linux"
 # extra [onnx] -- añade optimum + onnxruntime, necesarios para
 # ingestion/embedding_model.py (backend ONNX + pesos int8, decisión de
 # memoria del deploy, sesión 18-ago-2026) -- torch sigue siendo
@@ -40,7 +64,9 @@ sentence-transformers[onnx]>=3.0
 chromadb>=0.5
 
 # orquestación
-langgraph>=0.2
+# Versión exacta, mismo motivo que langchain/langchain-community/
+# langchain-text-splitters arriba -- ver ese comentario.
+langgraph==1.2.11
 
 # LLM (DeepSeek, API compatible OpenAI)
 openai>=1.40
