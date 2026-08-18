@@ -4048,3 +4048,74 @@ más allá del texto del warning: **31 passed, 2 skipped**.
 
 **Pendiente:** ninguna otra parte de la UI (`ui/app.py`) se tocó ni se
 auditó por consistencia de cifras -- solo `render_disclaimer()`.
+
+## 2026-08-19 (continuación 28) — investigación E150a: sin segundo bug de código, mismo patrón de Nodo 1 que tocoferol pero con matiz distinto (SOLO investigación, sin cambio de código)
+
+**Reporte del usuario:** E150a (Caramel colour) seguía mostrando el
+texto viejo "corpus no indexado" en el deploy real, pese a que el
+disclaimer confirmaba que ese deploy ya tenía el commit del fix.
+Pedido: `grep` en TODO el código fuente por si había un segundo punto
+que generara el mensaje, y diagnosticar si E150a sigue el mismo patrón
+que tocoferol o es un problema distinto.
+
+**Grep exhaustivo, no solo `nodes.py`:** `grep -rn "no está indexado"
+--include="*.py" .` (excluyendo `.venv`) -- **un único resultado real,
+el comentario que documenta el propio fix** (`nodes.py:463`); el resto
+son tests que ahora comprueban que la frase NO aparece. **No existe
+ningún segundo punto del código que produzca ese texto.**
+
+**Diagnóstico de E150a con datos reales (mismo método que tocoferol,
+sesión anterior):**
+- Node 1 con 3 preguntas reales (español e inglés) sobre E150a/Caramel
+  colour normaliza consistentemente a `"Caramel colour"` o `"Caramel
+  colour (plain)"` -- ninguna de las dos coincide con
+  `SUB.ChemicalName`, que solo tiene `"Caramel colours"` (plural),
+  `"Plain caramel"`, `"Ammonia caramel"`, `"Caustic sulphite
+  caramel"`, `"Sulphite ammonia caramel"`.
+- **Mismo patrón general que tocoferol** (Nodo 1 no hace match exacto)
+  pero **matiz distinto y real: aquí las 5 variantes SÍ resuelven
+  perfectamente** (mismo dictamen de grupo E150a-d, `structured_result`
+  completo + 5 chunks cada una) -- a diferencia de tocoferol, donde
+  solo 4 de 7 variantes resolvían. El fallo es 100% del Nodo 1 (ninguna
+  variante que el LLM produce coincide), no una mezcla con datos
+  incompletos.
+- **Re-test de extremo a extremo con el código TAL COMO ESTÁ en este
+  commit** (`answer_question("Is E150a (Caramel colour) safe as a
+  food additive?")`, llamada real a la API, no mockeada): la respuesta
+  dice correctamente *"no se ha podido resolver de forma exacta la
+  sustancia mencionada en la pregunta"* -- el mensaje NUEVO, no el
+  viejo. `structured_result=None`, `retrieved_chunks=0`, coherente con
+  el diagnóstico.
+
+**Conclusión: no hay ningún bug de código nuevo que arreglar.** El fix
+de la sesión anterior sigue funcionando correctamente para este caso
+con el código actual. La explicación más probable de que el usuario
+viera el texto viejo es que la prueba se hizo antes de que el
+contenedor de Streamlit Cloud terminara de reiniciarse con el commit
+nuevo (el disclaimer nuevo puede haberse visto en una parte de la app
+que carga distinto/antes que el resultado de una consulta real) --
+recomendado reproducir tras un "Reboot app" manual en Streamlit Cloud,
+no solo confiar en que un nuevo push ya reinició el contenedor.
+
+**Documentado en `CLAUDE.md`** (mismo sub-punto del pendiente #2 que
+tocoferol): el caso E150a completo, con el matiz de las 5/5 variantes
+resolviendo (vs. 4/7 de tocoferol) -- refuerza el riesgo de falsos
+positivos del fallback de substring propuesto (NO implementado): los
+dos casos reales apuntan en direcciones opuestas sobre si "cualquier
+match" sería seguro, así que hace falta una muestra más amplia antes
+de diseñarlo en serio.
+
+**No se cambió ningún código** -- sesión puramente de diagnóstico,
+sin fix nuevo. Suite completa re-confirmada por higiene: **31 passed,
+2 skipped**, sin cambios.
+
+**Pendiente:**
+- Confirmar con el usuario, tras un "Reboot app" manual en Streamlit
+  Cloud, si E150a sigue mostrando el texto viejo -- si persiste
+  DESPUÉS de un reinicio confirmado, eso sí sería una señal real de un
+  problema no diagnosticado todavía (más allá de timing de deploy), y
+  habría que investigar más a fondo (¿caché de Streamlit?, ¿proceso no
+  reiniciado pese al "Reboot"?).
+- Sigue sin implementarse el fallback de resolución del Nodo 1 -- dos
+  casos reales documentados ahora (tocoferol, E150a), ninguno usado
+  todavía para diseñar la solución estructural.

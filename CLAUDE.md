@@ -1027,6 +1027,41 @@ Pendiente, en orden de menor a mayor incertidumbre:
      MISMA causa falsa incrustada -- corregida también, para que el
      LLM no le siga repitiendo esa explicación inventada al usuario
      final aunque el dato ya venga bien formateado.
+   - **Segundo caso real confirmado, mismo patrón, distinto matiz --
+     Caramel colours / E150a (sesión 19-ago-2026, reportado por el
+     usuario tras ver el mensaje viejo en el deploy real).**
+     Verificado con `grep` en TODO el código fuente (no solo
+     `nodes.py`): **no existe ningún segundo punto que genere el texto
+     "todavía no está indexado"** -- el fix de arriba es el único
+     lugar del código que lo producía, y ya no lo produce (confirmado
+     además con una llamada real de extremo a extremo,
+     `answer_question("Is E150a (Caramel colour) safe as a food
+     additive?")`, que devuelve correctamente "no se ha podido
+     resolver de forma exacta la sustancia..." con el código tal como
+     está en este commit). El Nodo 1 normaliza consultas reales sobre
+     E150a a `"Caramel colour"` o `"Caramel colour (plain)"` (probado
+     con 3 preguntas reales, español e inglés) -- ninguna de las dos
+     coincide con `SUB.ChemicalName`, que solo tiene `"Caramel
+     colours"` (plural), `"Plain caramel"`, `"Ammonia caramel"`,
+     `"Caustic sulphite caramel"`, `"Sulphite ammonia caramel"`.
+     **Matiz importante frente a tocoferol: aquí las 5 variantes SÍ
+     resuelven perfectamente** (mismo dictamen de grupo, "re-evaluation
+     of caramel colours (E 150 a,b,c,d)", `structured_result` completo
+     + 5 chunks cada una) -- a diferencia de tocoferol, donde solo 4 de
+     7 variantes resolvían. Confirma que el fallo es 100% del Nodo 1
+     (ninguna variante nombrada por el LLM coincide), no una mezcla de
+     dato incompleto + resolución -- y refuerza el riesgo de falsos
+     positivos ya anotado abajo para el fallback de substring: aquí
+     TODAS las filas candidatas son "correctas" (mismo dictamen), así
+     que un fallback ingenuo habría funcionado por casualidad en este
+     caso concreto pero no en el de tocoferol -- no hay forma de saber
+     de antemano cuál de los dos patrones aplica sin la batería de
+     pruebas todavía no construida. **Si el usuario sigue viendo el
+     texto viejo en el deploy real después de este commit, la causa
+     más probable no es un bug de código -- es que la prueba se hizo
+     antes de que el contenedor de Streamlit Cloud terminara de
+     reiniciarse con el commit nuevo** (confirmar reproduciendo tras
+     un "Reboot app" manual, no solo un nuevo push).
    - **Diseño futuro propuesto para la resolución en sí, NO
      implementado -- fallback de coincidencia por substring/prefijo
      cuando la exacta falla** (ej. si `"Tocopherol"` no resuelve,
@@ -1046,10 +1081,14 @@ Pendiente, en orden de menor a mayor incertidumbre:
      necesita, como mínimo: (a) desambiguar entre múltiples matches de
      substring en vez de coger el primero a ciegas, (b) preferir filas
      que SÍ tengan un dictamen vinculado sobre las que no, y (c) una
-     batería de pruebas sobre varios casos multi-variante reales (no
-     solo tocoferol) antes de confiar en ello -- ninguno de los tres
-     puntos está diseñado todavía, esto es solo el problema y la idea
-     de dirección, no una propuesta lista para implementar.
+     batería de pruebas sobre varios casos multi-variante reales --
+     ahora hay 2 casos documentados (tocoferol: 4/7 variantes
+     resuelven; Caramel colours/E150a: 5/5 resuelven), y los dos
+     apuntan en direcciones opuestas sobre si "cualquier match" sería
+     seguro, lo que confirma que hace falta una muestra bastante más
+     amplia antes de confiar en ello -- ninguno de los tres puntos
+     está diseñado todavía, esto es solo el problema y la idea de
+     dirección, no una propuesta lista para implementar.
 3. **Integrar `END_SUM.Discussion.Discussion` en `OpinionReference`**,
    con el heurístico de detección de boilerplate ya validado en datos
    (ver "Hallazgos verificados": `len < 280` caracteres O duplicado
