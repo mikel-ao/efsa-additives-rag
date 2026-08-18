@@ -1,8 +1,26 @@
+[build-system]
+# Explícito (sesión 18-ago-2026, continuación 24) -- sin esta tabla,
+# pip cae al backend legado por defecto (`setuptools.build_meta:__legacy__`,
+# PEP 518), que NO soporta el hook `build_editable` de PEP 660. El
+# `-e .` de requirements.txt (ver ese archivo) necesita el backend
+# moderno para instalarse en modo editable sin depender de que la
+# versión de setuptools del entorno de deploy adivine lo mismo que la
+# de desarrollo local por casualidad.
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "efsa-additives-rag"
 version = "0.1.0"
 description = "RAG assistant sobre dictámenes de reevaluación de aditivos alimentarios (EFSA, Reglamento UE 257/2010)"
 requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+# Explícito, no auto-detección heurística de "src layout" (misma
+# razón que el build-backend de arriba: no depender de que el
+# comportamiento por defecto de una versión de setuptools coincida
+# entre desarrollo local y el entorno de deploy).
+where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

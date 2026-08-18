@@ -96,3 +96,23 @@ python-dotenv>=1.0
 
 # dev
 pytest>=8.0
+
+# El propio paquete `efsa_rag` (sesión 18-ago-2026, continuación 24) --
+# Streamlit Community Cloud solo ejecuta `pip install -r requirements.txt`
+# automáticamente, sin ningún paso equivalente a `pip install -e .`
+# (que sí corremos a mano en desarrollo local) -- sin esto, la app
+# fallaba en el primer arranque real con `ModuleNotFoundError: No
+# module named 'efsa_rag'`, porque `ui/app.py` importa el paquete con
+# imports absolutos (`from efsa_rag.deploy_assets import ...`, `from
+# efsa_rag.graph.build import ...`) y nada pone `src/` en `sys.path`
+# fuera de un venv de desarrollo instalado a mano. `pip` SÍ procesa
+# líneas `-e` dentro de un requirements.txt (verificado, no asumido) --
+# resuelta relativa al propio requirements.txt, así que `-e .` aquí
+# instala el repo en modo editable exactamente igual que el comando
+# manual de desarrollo, sin pasos adicionales de build en Streamlit
+# Cloud. Requiere el `[build-system]`/`[tool.setuptools.packages.find]`
+# explícitos de pyproject.toml (ver ese archivo) -- sin ellos, esta
+# línea seguía funcionando en local por casualidad (comportamiento
+# implícito de la versión de setuptools instalada), pero no había
+# garantía de que el entorno de deploy resolviera lo mismo.
+-e .

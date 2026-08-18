@@ -3769,3 +3769,106 @@ problemático en ninguno de ellos hasta ahora (el problema fue
 específico a langchain/langgraph por su árbol de sub-dependencias
 compartidas), así que no se ha tocado nada más sin evidencia de que
 haga falta.
+
+## 2026-08-19 (continuación 24) — primer intento de deploy real: `ModuleNotFoundError: No module named 'efsa_rag'`, arreglado con `-e .` en `requirements.txt` + `[build-system]` explícito; verificado con instalación REAL (no dry-run) en Linux limpio
+
+**Contexto:** primer intento real de deploy en Streamlit Community
+Cloud (ver pendiente #8). Falló en el arranque con
+`ModuleNotFoundError: No module named 'efsa_rag'` -- **no relacionado
+con el riesgo de memoria** que se venía investigando (ver "Backend de
+embeddings: ONNX int8" y el pendiente #8 en general): la app ni
+siquiera llegó a intentar cargar el grafo/Chroma/embeddings, así que
+el primer intento de deploy real todavía NO fue la prueba de memoria
+que se buscaba -- eso sigue pendiente del PRÓXIMO intento, una vez
+resuelto esto.
+
+**Causa raíz, confirmada por diagnóstico de código, no adivinada:**
+Streamlit Community Cloud solo ejecuta `pip install -r
+requirements.txt` automáticamente al desplegar -- no hay ningún paso
+equivalente a `pip install -e .`, que es como el paquete `efsa_rag`
+se instala en desarrollo local (confirmado: `src/efsa_additives_rag.egg-info/`
++ `__editable__.efsa_additives_rag-0.1.0.pth` en el venv local, un
+paso manual que nadie había replicado para el entorno de deploy).
+`ui/app.py` (y `deploy_assets.py`, `graph/build.py`) usan imports
+absolutos -- `from efsa_rag.deploy_assets import ...`, `from
+efsa_rag.graph.build import ...` -- que exigen que `efsa_rag` sea
+importable como paquete top-level, cosa que sin la instalación
+editable no ocurre en ningún sitio (Streamlit `run <script>` solo
+añade al `sys.path` el directorio del propio script,
+`src/efsa_rag/ui/`, no `src/`).
+
+**Fix aplicado -- Opción A del usuario (confirmada como soportada,
+no la alternativa de `sys.path.insert()`):**
+- **`requirements.txt`, línea nueva al final: `-e .`** -- pip SÍ
+  procesa líneas `-e` dentro de un archivo de requirements
+  (verificado, no asumido de la documentación), resuelta relativa a
+  la ubicación del propio archivo -- como `requirements.txt` vive en
+  la raíz del repo (donde está `pyproject.toml`), `-e .` instala el
+  repo en modo editable exactamente igual que el `pip install -e .`
+  manual de desarrollo local, sin ningún paso de build adicional en
+  el lado de Streamlit Cloud.
+- **`pyproject.toml`, `[build-system]` explícito añadido** (`requires
+  = ["setuptools>=64"]`, `build-backend = "setuptools.build_meta"`) +
+  **`[tool.setuptools.packages.find]` con `where = ["src"]`
+  explícito.** Antes de este cambio, el archivo NO tenía ninguna tabla
+  `[build-system]` -- el `pip install -e .` local funcionaba de
+  todos modos, pero por el comportamiento IMPLÍCITO de la versión de
+  setuptools instalada (backend por defecto + auto-detección
+  heurística de "src layout"), no por una configuración declarada. Sin
+  una tabla explícita, no había ninguna garantía de que el entorno de
+  deploy (con su propia versión de pip/setuptools, potencialmente
+  distinta) resolviera exactamente lo mismo -- motivo directo para
+  hacerlo explícito ahora, no solo un capricho de estilo.
+- **Por qué Opción A y no `sys.path.insert()` en `ui/app.py`:** la
+  alternativa de path-hack evita el problema en el único punto de
+  entrada que Streamlit Cloud ejecuta, pero deja el paquete
+  "mal instalado" en ese entorno -- dos mecanismos de resolución de
+  imports distintos entre desarrollo local (paquete instalado de
+  verdad) y deploy (hack de `sys.path`), y no se generaliza a ningún
+  otro posible punto de entrada futuro (MCP, scripts) sin repetir el
+  hack. `-e .` mantiene un único mecanismo -- el mismo en ambos
+  entornos -- y es lo que el propio usuario ya identificó como la
+  opción más simple, pidiendo solo confirmación de que pip la soporta
+  antes de aplicarla.
+
+**Verificación real, no solo revisión de código -- exactamente el
+escenario pedido: venv Linux limpio con SOLO `pip install -r
+requirements.txt`, sin `pip install -e .` aparte.** Contenedor
+`python:3.12-slim` real (mismo método que las verificaciones
+anteriores de esta semana), repo montado, **instalación REAL, no
+`--dry-run`** (esta vez hacía falta instalar de verdad para poder
+importar después):
+```
+pip install -r requirements.txt   # incluye la nueva línea -e .
+python -c "import efsa_rag; ..."
+```
+Resultado: `efsa_rag OK -> /app/src/efsa_rag/__init__.py`, más
+`from efsa_rag.deploy_assets import ensure_deploy_assets_downloaded`
+y `from efsa_rag.graph.build import answer_question` -- los dos
+imports absolutos reales que usa `ui/app.py` -- también resueltos sin
+error. Sin ningún paso manual adicional fuera de la única línea de
+`pip install -r requirements.txt`.
+
+**Verificado sin regresiones en desarrollo local, tras los cambios de
+`pyproject.toml`:** `import efsa_rag` en el venv local sigue
+resolviendo al mismo sitio de siempre
+(`/Users/mikel/repos/efsa-additives-rag/src/efsa_rag/__init__.py`), y
+la suite completa sigue en verde: **30 passed, 2 skipped**, sin
+regresiones -- el `[build-system]`/`[tool.setuptools.packages.find]`
+explícitos no cambiaron nada del comportamiento ya funcional, solo lo
+hicieron determinista.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El siguiente intento de deploy real en Streamlit Community Cloud
+  sigue pendiente de que el usuario lo ejecute -- este SÍ debería ser
+  la prueba real de memoria que se venía buscando (ver pendiente #8),
+  ya que ahora la app debería llegar a intentar cargar
+  Chroma/embeddings/xlsx, que es donde vivía el riesgo de ~126-145 MB
+  sobre el límite de 1 GB.
+- No verificado con un cliente MCP real ni con el propio Streamlit
+  Cloud -- solo con el mismo método de contenedor Docker usado toda
+  esta semana para simular Linux. Sigue siendo la mejor aproximación
+  disponible sin acceso directo a una cuenta de Streamlit Cloud, pero
+  no es 100% idéntica al entorno de build real de Streamlit
+  Community Cloud (que podría tener sus propias particularidades no
+  reproducidas aquí).
