@@ -552,6 +552,14 @@ Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-pr
   detección de esa ambigüedad (para decidir cuándo caer a un fallback de
   LLM sobre el texto del PDF) está marcada como TODO en
   `verify_currency_node`, no implementada todavía.
+  - **DIFERIDO EXPLÍCITAMENTE (sesión 18-ago-2026), con evidencia de
+    prevalencia, no por omisión -- ver pendiente #6 de "Estado del
+    código" para la decisión completa y el razonamiento de por qué se
+    difiere.** Escaneadas las 247 sustancias con enlace estructural
+    resoluble del corpus (94 tier 1 + 153 tier 2/3): **0 casos
+    ambiguos** con un umbral de 90 días (y también 0 con 30 días) --
+    el hueco de código es real, pero no se ha materializado en ningún
+    dato real del corpus actual. Detalle completo en el pendiente #6.
 - **Existe un servidor MCP público** (`mcp-openfoodtox`) que ya expone
   OpenFoodTox por MCP, sobre un dataset desactualizado (2023). La
   diferenciación de este proyecto NO puede ser "expongo OpenFoodTox por
@@ -1002,6 +1010,27 @@ Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-pr
     tablas por documento**, hasta 23 en el dossier de aspartamo. Esto
     descarta tratar el problema como marginal -- cualquier decisión
     aquí afecta a la inmensa mayoría del corpus.
+    **[CORRECCIÓN, sesión 18-ago-2026 (auditoría general de
+    CLAUDE.md/PROGRESS.md): la cifra 146/161 (91%) NO se ha podido
+    reproducir.** Re-escaneados los 161 PDFs con el mismo patrón
+    (`Table N:`) sobre texto plano y sobre texto en modo "blocks" (dos
+    métodos de extracción, mismo resultado en ambos): **138/161 (86%)**.
+    Probada también una variante más laxa del patrón (sin exigir los
+    dos puntos, "Table N" a secas): 155/161 (96%) -- ninguna de las dos
+    reproduce 146 exactamente, y 146 cae entre ambos límites sin que se
+    haya identificado qué variante de método la produjo (no quedó
+    guardado el script original de esa sesión). **No se borra la cifra
+    original -- se deja marcada como NO VERIFICADA, cifra vigente para
+    cualquier razonamiento posterior: 138/161 (86%)**, re-confirmada
+    contra el xlsx real en la sesión de auditoría. La CONCLUSIÓN que
+    esta evidencia sostenía (las tablas son la norma, no el caso raro,
+    y cualquier decisión de tratamiento de tablas afecta a la inmensa
+    mayoría del corpus) sigue siendo válida con cualquiera de las tres
+    cifras -- 86-96% es "inmensa mayoría" en cualquier lectura -- así
+    que la discrepancia no cambia la decisión tomada (Opción A), solo
+    corrige el número citado. Mediana de tablas/documento y máximo en
+    aspartamo (23) no re-verificados en esta auditoría -- solo la
+    cifra de prevalencia (con/sin tabla) fue el objeto de la duda.]**
   - **Evidencia 2 -- qué contienen esas tablas, y que OpenFoodTox NO las
     cubre (verificado, no asumido):** muestreadas 207 leyendas de tabla
     en 25 documentos al azar. Predominan MPLs (niveles máximos
@@ -1413,6 +1442,46 @@ Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-pr
       la duplicación de embeddings N veces es barata en almacenamiento
       y simplifica el filtrado -- no hay razón de rendimiento para
       preferir la alternativa delimitada aquí.
+    - **ESQUEMA FINAL, IMPLEMENTADO (sesión 18-ago-2026) -- SIN
+      `e_number`, decisión explícita del usuario.** Al escribir de
+      verdad el indexado en Chroma se encontró que `e_number` (arriba)
+      no tiene una fuente fiable a NIVEL DE SUSTANCIA: `SUB` no tiene
+      ningún campo de E-number (ver pendiente #2 de "Estado del
+      código", cerrado en esta misma sesión), y la única fuente
+      disponible (patrón de texto en el título del dossier) es POR
+      DOSSIER, no por sustancia -- en un dossier de grupo (ej.
+      tartratos: 5 E-numbers en el título, 7 sustancias resueltas) no
+      hay un mapeo 1:1 fiable entre cada E-number y cada
+      `substance_uuid` sin inventar una relación de identidad que el
+      dato no respalda -- MISMA disciplina que ya rige los 3 niveles de
+      resolución de sustancia (preferir omitir a inventar). **Decisión:
+      `e_number` NO forma parte del esquema de metadatos de Chroma.**
+      `chemical_name` + `substance_uuid` siguen siendo el identificador
+      fiable de sustancia por chunk. La resolución de E-numbers en
+      preguntas de usuario (Nodo 1, ej. "E 951") queda para una tabla
+      auxiliar futura E-number -> `substance_uuid` derivada aparte
+      (con su propia verificación de los casos multi-sustancia), NO
+      como metadato por chunk -- ver el pendiente #2 actualizado.
+      **Esquema final de metadatos por entrada de Chroma** (uno por
+      combinación chunk×sustancia resuelta, implementado en
+      `ingestion/chroma_index.py`): `substance_uuid`, `chemical_name`,
+      `dossier_uuid`, `dossier_title`, `substance_resolution_tier`
+      (int), `doi`, `pdf_filename`, `chunk_group_id`, `is_group_dossier`
+      (bool, `True` si el dossier tiene >1 sustancia resuelta) --
+      siempre presentes en los 67.827 chunks del corpus persistido
+      (`data/processed/chunks.jsonl`), 0 valores `None` para estos
+      campos, verificado. `section_heading` (str) y `page_number` (int)
+      también, pero con un guardado explícito: **Chroma rechaza `None`
+      en metadatos con `TypeError` (verificado directamente, no
+      asumido)** -- `section_heading` es `None` en 116/67.827 filas
+      (0,17%, los chunks de portada antes del primer encabezado
+      detectado), así que la clave se OMITE del diccionario de
+      metadato en vez de escribir `None` -- confirmado que Chroma
+      admite metadatos con claves distintas entre documentos de la
+      MISMA colección sin problema (no exige un esquema uniforme).
+      `page_number`/`doi` no necesitaron este guardado en la práctica
+      (0 `None` en los 67.827), pero el código los trata igual por
+      seguridad, no por necesidad medida.
 - **Alcance completo del bug de deduplicación por título en
   `unique_reevaluation_opinions()` -- investigado sesión 17-ago-2026
   (continuación 3), antes de diseñar el chunking. CORRIGE el bullet
@@ -1829,6 +1898,30 @@ Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-pr
   todavía en ese momento) -- el coste de incluir el contexto narrativo
   real no cambia la conclusión de presupuesto. Presupuesto de
   referencia: 6-7€/mes cubre miles de consultas incluso en el peor caso.
+  **ACTUALIZACIÓN NECESARIA, NO CERRADA (sesión 18-ago-2026,
+  continuación 12): `NODE_4_MAX_TOKENS` subió de 800 a 2000 (ver el
+  bullet de truncamiento del Nodo 4 en "Hallazgos verificados" para el
+  motivo) -- esta cifra de $0,0005-0,0014/consulta NO incorpora ese
+  cambio, sigue basada en el output_tokens de ~365 medido en la sesión
+  del fix de "thinking".** Dato real medido tras subir el tope: una
+  respuesta completa real (Shellac, caso con 5 chunks + aviso de tier 3
+  + desglose largo) consumió **845 tokens de salida** (`finish_reason
+  == 'stop'`, terminó sola, no llegó a los 2000) -- más del doble de
+  los ~365 asumidos en la estimación vigente. **No se recalcula aquí un
+  $ preciso porque no hay una tarifa $/token de DeepSeek verificada en
+  esta sesión** -- la cifra de $0,0005-0,0014 la aportó el usuario
+  contra una fuente de pricing externa en una sesión anterior, no una
+  tarifa que este documento tenga memorizada. Si el output real por
+  consulta ronda ahora 800-850+ tokens en vez de 365 (más del doble),
+  y el coste de salida escala linealmente con los tokens de salida, la
+  PARTE del coste debida a la salida escalaría en esa misma proporción
+  -- pero no se puede aislar qué fracción del $0,0005-0,0014 total era
+  coste de entrada vs. de salida sin la tarifa exacta. **Pendiente:
+  recalcular con la tarifa real antes de dar el presupuesto de 6-7€/mes
+  por bueno con el tope nuevo.** Caso peor (si el reintento por
+  truncamiento llega a dispararse, `NODE_4_RETRY_MAX_TOKENS = 3500`):
+  hasta ~4x el tope original de 800, pero el reintento solo se paga en
+  el caso raro (la primera pasada ya se truncó), no en cada consulta.
   Se evaluó Kimi K2.6/K3 como alternativa: K2.6 es más caro que DeepSeek
   y con peor puntuación en benchmarks generales; K3 iguala casi a
   modelos de frontera pero a 15-20x el coste. Se mantiene DeepSeek por
@@ -1843,6 +1936,67 @@ Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-pr
   desplegado con el default de DeepSeek sin darse cuenta habría corrido
   con un coste real ~2-3x el estimado aquí, no por un cambio de precio
   del proveedor sino por un parámetro de la llamada.
+- **Modelo de embeddings: `sentence-transformers/all-MiniLM-L6-v2`
+  (384 dims, local) -- decidido y probado con datos reales (sesión
+  18-ago-2026), no solo elegido por defecto teórico.** Se descarga y
+  carga sin problemas en el venv del proyecto (`sentence-transformers`
+  ya en `requirements.txt`) -- 3,4-7,7 s de carga según si el modelo ya
+  está en caché local.
+  - **Entorno de esta sesión con GPU disponible** (`model.device` ->
+    `cuda:0`). **ADVERTENCIA EXPLÍCITA PARA EL DESPLIEGUE, no lo des
+    por descontado:** si se reconstruye el índice en un entorno sin GPU
+    (ej. HF Spaces/Streamlit Cloud gratuito, ver la decisión de
+    despliegue "Opción A" -- el índice de Chroma se construye en local
+    y se empaqueta, no se reindexa en caliente en producción, pero
+    "en local" puede seguir siendo un entorno sin GPU si el reindexado
+    se hace desde otra máquina o CI) las cifras de abajo NO son
+    representativas -- solo-CPU sería significativamente más lento, no
+    medido en esta sesión. Volver a medir en el entorno real donde se
+    reconstruya el índice antes de asumir minutos de reconstrucción
+    similares a los de aquí. Esto importa en concreto para el flujo de
+    "refresco" descrito en la decisión de despliegue: cada vez que se
+    añadan dictámenes nuevos al corpus y haga falta reindexar antes de
+    redeploy, el tiempo real dependerá de si esa reconstrucción corre
+    con GPU o no.
+  - **Lote de prueba (300 chunks, 150 aspartamo + 150 tartratos):
+    435,5 chunks/s**, proyección lineal ~4,1 min para el corpus
+    completo.
+  - **CORPUS COMPLETO INDEXADO DE VERDAD (sesión 18-ago-2026,
+    continuación 4) -- tiempo REAL, no proyección:** 67.827 chunks,
+    **2,97 min en total** (3,4 s carga del modelo + 1,27 min embeddings
+    a 887,3 chunks/s + 1,51 min escritura en Chroma) -- más rápido que
+    la proyección de 4,1 min, principalmente porque `model.encode()`
+    con `batch_size=256` explícito rinde casi el doble que el batch
+    interno por defecto (32) usado implícitamente en la prueba de 300.
+    Verificado `collection.count() == 67827` tras escribir. Persistido
+    en `data/chroma/` (colección `efsa_reevaluation_chunks`, cliente
+    `chromadb.PersistentClient`) -- **597 MB en disco**
+    (`chroma.sqlite3`). Reindexar por completo BORRA la colección
+    anterior primero (`scripts/build_chroma_index.py --all`, evita
+    duplicados de una corrida previa) -- no es incremental, es un
+    rebuild completo cada vez.
+  - **Consultas de verificación sobre el índice completo (no el lote
+    de prueba) -- 3 preguntas, temas distintos, todas con resultados
+    temáticamente correctos:**
+    1. *"genotoxicity studies and safety assessment"* -- top 5 incluye
+       la sección `4.3. Genotoxicity` del TiO2 vigente (E171, 2021) y
+       contenido de genotoxicidad de sílice/eritritol.
+    2. *"why was titanium dioxide withdrawn as a food additive"* --
+       **los 5 resultados son de los 2 dossiers de TiO2 (2016 y
+       2021)**, incluida su sección `1. Introduction` y `Summary`
+       explicando la re-evaluación -- caso conocido usado como prueba
+       específica, resultado correcto.
+    3. *"dietary exposure assessment uncertainties"* -- top 5 mezcla
+       secciones "Uncertainty analysis" de 5 aditivos DISTINTOS
+       (verificado contra `chemical_name`, no adivinado: poliglicerol
+       poliricinoleato E476, octyl gallate E311, cochinilla/ácido
+       carmínico E120, dimetil dicarbonato E242, dodecyl gallate E312)
+       -- confirma que no es un acierto aislado del tema de
+       genotoxicidad, generaliza a otro tema.
+  - Verificado además, no asumido: Chroma lanza `TypeError` con valores
+    `None` en metadatos (ver el ESQUEMA FINAL más abajo en "Hallazgos
+    verificados") y SÍ admite claves de metadato distintas entre
+    documentos de la misma colección.
 - **Contrato Nodo 2 → Nodo 4 (`retrieved_chunks`): `RetrievedChunk`, no
   `list[str]` -- fijado en sesión 17-ago-2026 (continuación 7), ANTES de
   escribir el Nodo 2, precisamente para que quien lo escriba (aunque sea
@@ -1929,17 +2083,294 @@ Implementado y con lógica real (no placeholder):
 - `graph/llm_client.py` — interfaz `LLMClient` + `DeepSeekClient`
   (con "thinking" explícitamente desactivado, ver "Decisiones de
   arquitectura ya tomadas") + `OllamaClient`.
-- `graph/nodes.py` — Nodo 1 (extracción con LLM), Nodo 3 (determinista)
-  y Nodo 4 (generación) implementados. Nodo 4 conecta
-  `deps.llm_client.complete(...)` con system prompt =
+- `graph/nodes.py` — Nodo 2 (retrieval híbrido), Nodo 3 (determinista) y
+  Nodo 4 (generación) implementados.
+  **Nodo 1 (`extract_entity_node`) -- PRIMERA IMPLEMENTACIÓN REAL
+  (sesión 18-ago-2026, continuación 7), NO una continuación de nada
+  previo.** Hasta esta sesión era literalmente `raise NotImplementedError`
+  desde el primer commit del repo, pese a documentación previa que
+  decía lo contrario -- ver la corrección completa en PROGRESS.md
+  (continuación 6) antes de esta entrada. Diseño e implementación:
+  - `NODE_1_ENTITY_EXTRACTION_PROMPT` (nuevo, primera vez que existe):
+    pide al LLM el nombre químico CANÓNICO EN INGLÉS de la sustancia
+    mencionada en la pregunta -- una sola línea, sin explicación, o
+    literalmente `NONE` si no identifica ningún aditivo. Necesario en
+    inglés porque `OpenFoodToxStore.substance_uuid_by_name` exige
+    coincidencia EXACTA contra `SUB.ChemicalName` (limitación conocida,
+    pendiente #2 más abajo, NO resuelta por este nodo -- si el LLM
+    normaliza a un nombre razonable que no coincide carácter a
+    carácter con `SUB` (ej. nombres compuestos), la resolución falla y
+    `substance_uuid` queda en `None`, comportamiento esperado).
+  - `max_tokens=30` -- un nombre químico, no una frase.
+  - **Probado con llamada REAL a la API de DeepSeek, no asumido ni
+    mockeado** (`tests/test_nodes.py::test_extract_entity_node_resolves_aspartame_from_real_english_query`,
+    pregunta en inglés sobre aspartamo -- el caso de referencia ya
+    usado en el resto del proyecto -- verifica `substance_uuid` contra
+    `store.substance_uuid_by_name("Aspartame")` directamente, no da el
+    resultado por bueno solo porque el prompt parezca razonable) +
+    `test_extract_entity_node_unrelated_query_resolves_to_none`
+    (pregunta sin ningún aditivo -- confirma que no inventa una
+    sustancia). Ambos tests hacen una llamada real y FACTURADA a la
+    API en cada ejecución (a diferencia del resto de tests de este
+    archivo, que son gratis una vez el recurso local existe) -- se
+    saltan si `DEEPSEEK_API_KEY` no está configurada.
+  - **Verificado además, a mano, con 4 preguntas reales antes de dar
+    la implementación por buena** (no solo las 2 del test automatizado):
+    inglés+aspartamo -> `Aspartame` (UUID correcto); español, "Por
+    qué se retiró el dióxido de titanio como aditivo?" -> `Titanium
+    dioxide` (UUID correcto); E-number "Is E 951 safe for children?"
+    -> `Aspartame` (UUID correcto); pregunta sin relación ("What time
+    is it in Tokyo") -> `None`/`None`, sin inventar.
+    **La limitación de idioma español/E-numbers de
+    `substance_uuid_by_name` (pendiente #2 más abajo) sigue SIN
+    RESOLVER a nivel estructural -- NO la des por cerrada.** La función
+    en sí sigue exigiendo coincidencia EXACTA contra `SUB.ChemicalName`
+    en inglés, sin cambios. Lo único que cambió es que el LLM normaliza
+    ANTES de llegar a esa función, y en los 4 casos puntuales probados
+    (1 en español, 1 con E-number) acertó la traducción/normalización.
+    Eso es **una mitigación parcial, verificada en un puñado de casos
+    concretos, NO una batería de pruebas sistemática** -- no hay
+    ninguna garantía de que el LLM acierte con nombres compuestos,
+    E-numbers menos conocidos, o variantes de redacción no probadas
+    todavía. Tratar como "probablemente ayuda en la mayoría de casos
+    comunes", no como "el problema está resuelto" -- si en el futuro se
+    quiere una garantía real, hace falta una batería de pruebas más
+    amplia (o una solución estructural, ej. una tabla de sinónimos/
+    traducciones curada) antes de confiar en esto para producción.
+  - Si `substance_uuid` resuelve a `None` (LLM respondió `NONE`, o el
+    nombre no coincide exacto en `SUB`), el resto del grafo ya lo
+    maneja: Nodo 2 deja `retrieved_chunks` vacío sin llamar a Chroma;
+    Nodo 3 espera `substance_uuid` no nulo y lanza `ValueError` si se
+    le llama sin él -- decidir si llamarlo en ese caso es
+    responsabilidad de la orquestación del grafo -- ver `graph/build.py`
+    más abajo, implementado en la misma sesión que cierra este punto.
+  Nodo 4 conecta `deps.llm_client.complete(...)` con system prompt =
   `NODE_4_GROUNDING_RULES` + `NODE_4_SAFETY_COMMUNICATION_RULES`;
   probado con llamada real a la API (caso aspartamo) cumpliendo las
-  reglas de comunicación de riesgo. Nodo 2 (retrieval híbrido) sigue
-  siendo un contrato con `NotImplementedError` — bloqueado por no
-  existir todavía el vector store (ver pendiente 4-5 abajo). El Nodo 4
-  está diseñado para degradar con gracia con `retrieved_chunks` vacío
-  mientras tanto, pero no se ha probado con fragmentos narrativos
-  reales.
+  reglas de comunicación de riesgo -- este es el nodo que se probó
+  contra la API real ya en sesión 2 (16-ago-2026), probablemente el
+  origen de la confusión que atribuyó lo mismo al Nodo 1 sin serlo
+  (ver la entrada de corrección en PROGRESS.md) -- ahora el Nodo 1
+  TAMBIÉN está probado contra la API real por derecho propio, no por
+  la misma prueba de otro nodo.
+  **[CORRECCIÓN, sesión 18-ago-2026 (auditoría general): esta prueba
+  real es cierta pero está DESACTUALIZADA -- no cubre el prompt tal
+  como es hoy.** La llamada real de sesión 2 se hizo contra una
+  versión de `_format_structured_result` anterior a que existieran
+  `discussion_text`/`discussion_is_boilerplate` (añadidos en sesión 3,
+  16-ago-2026) y anterior al texto de "motivos opuestos" para ADI sin
+  valor numérico (tier 1/2, añadido en sesión 17-ago-2026 continuación
+  7) -- ambos confirmados presentes en el código actual, ambos
+  ausentes en el momento de esa prueba. `_format_retrieved_chunks` (el
+  aviso de tier 3) tampoco existía todavía. **Ninguna de estas tres
+  adiciones ha pasado nunca por una llamada real a la API.** Más
+  importante: como el Nodo 2 no existía hasta la sesión de hoy,
+  **todas las llamadas reales hechas a este nodo hasta ahora se
+  hicieron con `retrieved_chunks=[]`** -- el caso de fragmentos
+  narrativos reales poblando el prompt (el motivo de ser del Nodo 2)
+  nunca se ha probado end-to-end con una llamada real. Y, verificado
+  con `grep` en esta misma auditoría: **no existe ningún test
+  automatizado de `generate_answer_node`** en `tests/` -- a diferencia
+  del Nodo 1 y el Nodo 2, esta verificación nunca se codificó como
+  reproducible, solo quedó como una sesión manual puntual de hace
+  varios días. No tratar "Nodo 4 probado contra la API real" como una
+  garantía vigente del comportamiento actual -- antes de confiar en
+  ello para producción, hace falta repetir la prueba real con el
+  prompt de hoy (incluido `retrieved_chunks` no vacío) y, si se quiere
+  que sea reproducible, añadir un test automatizado como los de los
+  Nodos 1 y 2.]**
+  **Nodo 2 (`hybrid_retrieval_node`) IMPLEMENTADO (sesión 18-ago-2026,
+  continuación 5) y probado con una consulta real contra el índice
+  completo de Chroma (67.827 chunks, caso aspartamo).** Diseño:
+  - Si `state["substance_uuid"]` es `None` (Nodo 1 no resolvió nada),
+    NO se llama a Chroma en absoluto -- `retrieved_chunks` queda vacío
+    directamente. Verificado con un vectorstore de prueba que lanza
+    excepción si se le llama, para confirmar que de verdad no se
+    invoca, no solo que el resultado da vacío por casualidad.
+  - Si hay `substance_uuid`, se embede `user_query` con
+    `deps.embedding_model` (el MISMO modelo usado para indexar,
+    `all-MiniLM-L6-v2` -- pasado como dependencia, no cargado de nuevo
+    en cada llamada) y se consulta `deps.vectorstore.query(...)`
+    filtrando por `where={"substance_uuid": ...}` -- el único campo
+    del esquema de metadatos con filtro exacto fiable (no hay
+    `e_number`, y `substance_name` es texto libre del usuario, no una
+    clave de índice).
+  - `k = DEFAULT_RETRIEVAL_K = 5` -- el extremo superior del rango
+    k=3-5 ya asumido en el cálculo de presupuesto de contexto del Nodo
+    4 (ver PROGRESS.md sesión 18-ago-2026), elegido porque el
+    presupuesto seguía siendo razonable ahí y da más contexto real.
+  - `substance_resolution_tier` y el resto de campos de
+    `RetrievedChunk` se copian TAL CUAL de los metadatos ya escritos
+    al indexar -- no se re-derivan en el Nodo 2.
+  - `NodeDependencies` ganó un campo nuevo, `embedding_model` (además
+    de `vectorstore`, ya existente) -- ambos tipados como `object` a
+    propósito, mismo principio que `LLMClient`: no acoplar
+    `graph/nodes.py` a la API concreta de chromadb/sentence-transformers.
+  - Probado con `tests/test_nodes.py::test_hybrid_retrieval_node_aspartame_real_query`
+    (consulta real sobre genotoxicidad/carcinogenicidad de aspartamo,
+    no un mock -- verifica que todos los chunks devueltos tienen el
+    `substance_uuid` correcto, `chemical_name == "Aspartame"`,
+    `section_heading` no vacío, y `substance_resolution_tier == 1`) y
+    `test_hybrid_retrieval_node_no_uuid_skips_chroma_entirely`. Se
+    saltan si `data/chroma/` no existe (mismo patrón que los tests que
+    dependen del xlsx real).
+  - **DIAGNÓSTICO (sesión 18-ago-2026, continuación 12, SOLO
+    investigación, nada implementado): la calidad del retrieval es
+    sensible al fraseo de la pregunta -- confirmado con TiO2, no
+    asumido.** La consulta "Why was titanium dioxide withdrawn as a
+    food additive?" NO recuperó ningún fragmento de la sección
+    "4.3. Genotoxicity" (página 45) -- la sección que de hecho contiene
+    la preocupación de seguridad central del dictamen de 2021 -- y en
+    su lugar trajo Introduction/Background/Summary, contenido más
+    regulatorio que sustantivo. Probada una reformulación más directa,
+    "titanium dioxide genotoxicity concern conclusion": **el resultado
+    #1 es exactamente esa sección (4.3. Genotoxicity)** -- confirma que
+    el contenido SÍ está bien chunked e indexado, el problema es de
+    fraseo de la pregunta original ("withdrawn" no es un marco que el
+    propio dictamen use -- es una reevaluación, no un anuncio de
+    retirada, así que la similitud de embeddings favoreció contenido
+    superficial sobre la sección sustantiva). **Hallazgo secundario, no
+    buscado:** incluso con la reformulación mejor, 3 de los 5
+    resultados fueron fragmentos de la sección "References" (entradas
+    bibliográficas que mencionan "genotoxicity" en el título del
+    estudio citado, no razonamiento del panel) -- mismo tipo de ruido
+    de baja calidad que ya motivó excluir tablas del índice narrativo
+    (ver la decisión de Opción A). **No implementado nada de esto** --
+    ni reformulación de query en el Nodo 1/2, ni exclusión de
+    "References" del chunking -- queda como candidato a mejora futura
+    del Nodo 2/chunker, no urgente pero real.
+  El Nodo 4 sigue diseñado para degradar con gracia con
+  `retrieved_chunks` vacío, y desde sesión 18-ago-2026 (continuación
+  10-11) también se ha probado de extremo a extremo con
+  `retrieved_chunks` reales poblados por el Nodo 2 en la misma
+  ejecución (`answer_question`, ver `graph/build.py` más abajo).
+  - **BUG REAL ENCONTRADO Y ARREGLADO (sesión 18-ago-2026, continuación
+    12): truncamiento silencioso de la respuesta, sin ningún aviso al
+    usuario.** Una respuesta real sobre Shellac (caso tier 3, con aviso
+    de fiabilidad + desglose largo) se cortó a mitad de frase. Antes de
+    tocar nada, se confirmó la causa exacta vía
+    `response.choices[0].finish_reason` (expuesto ahora como
+    `LLMResponse.finish_reason`, campo nuevo en `graph/llm_client.py`,
+    antes no existía en la interfaz): **`finish_reason == 'length'`,
+    `output_tokens == 800` (el tope exacto de entonces)** -- truncamiento
+    real por `max_tokens`, no otra causa (no filtro de contenido, no
+    secuencia de parada). El texto se devolvía al usuario tal cual,
+    cortado, sin ninguna señal de que faltaba contenido.
+  - **Fix, dos partes:** (1) `NODE_4_MAX_TOKENS` subido de 800 a 2000
+    (`graph/nodes.py`) -- con "thinking" ya desactivado (ver más abajo),
+    esto es presupuesto de texto de salida real, no overhead oculto de
+    razonamiento, así que subirlo es coste directo -- ver el bullet de
+    precio de referencia más arriba para la actualización pendiente de
+    ese cálculo. (2) `generate_answer_node` ahora comprueba
+    `response.finish_reason == "length"` explícitamente: si trunca,
+    reintenta UNA vez con `NODE_4_RETRY_MAX_TOKENS = 3500`, y si sigue
+    truncada incluso así, añade `"\n\n[respuesta incompleta por límite
+    de longitud]"` al final -- nunca se devuelve una respuesta cortada
+    sin avisar, pase lo que pase.
+  - **Verificado tras el fix, misma consulta de Shellac:** con
+    `max_tokens=2000`, la respuesta terminó sola
+    (`finish_reason == 'stop'`) en **845 tokens de salida** -- ni
+    siquiera hizo falta el reintento, y la respuesta ahora cierra con
+    un párrafo de "Conclusión" completo, no cortado a mitad de frase.
+    Suite de tests completa: 23/23 siguen pasando.
+- **`graph/build.py` (nuevo, sesión 18-ago-2026, continuación 9) --
+  ensamblado del grafo LangGraph completo, COMPILADO Y VERIFICADO
+  ESTRUCTURALMENTE, NO ejecutado todavía con datos reales.** Distingue
+  a propósito de otros bullets de esta lista: aquí "verificado" es
+  "el grafo compila y su diagrama Mermaid tiene la forma esperada", no
+  "se ha invocado con una pregunta real" -- eso queda explícitamente
+  para la próxima sesión, no se hizo en esta a petición del usuario
+  ("no llames a la API todavía").
+  - `build_graph(deps: NodeDependencies) -> CompiledStateGraph`: los 4
+    nodos registrados como closures que capturan `deps` (las funciones
+    de nodo toman `(state, deps)`, `StateGraph.add_node` espera solo
+    `state`). `extract_entity -> hybrid_retrieval ->` arista
+    condicional `-> {verify_currency -> generate_answer} | {generate_answer}`.
+  - **Decisión de diseño explícita -- qué pasa si el Nodo 1 no resuelve
+    `substance_uuid`: el grafo SIGUE hasta el Nodo 4, no corta antes.**
+    Pero salta el Nodo 3 (que lanzaría `ValueError` si se le llamara
+    sin `substance_uuid`, sin cambios en su código) -- una única arista
+    condicional justo después del Nodo 2 decide entre el camino normal
+    (Nodo 3 -> Nodo 4) y el camino corto (directo a Nodo 4). Motivo de
+    seguir hasta el Nodo 4 en vez de cortar: el Nodo 4 ya estaba
+    diseñado para degradar con gracia en ambos huecos --
+    `structured_result` no puesto en el estado se lee como `None`
+    igual que si el Nodo 3 lo hubiera puesto explícitamente
+    (`GraphState` es `TypedDict(total=False)`), y `retrieved_chunks`
+    ya queda vacío por diseño del propio Nodo 2 sin `substance_uuid` --
+    así que el Nodo 4 puede producir una respuesta útil ("no he podido
+    identificar de qué aditivo hablas") sin código nuevo. Cortar antes
+    dejaría al usuario sin respuesta y no ahorra nada (el Nodo 1, la
+    única llamada cara del camino corto, ya se pagó). `vigencia_ambigua`
+    (solo la pone el Nodo 3) queda sin definir en el camino corto --
+    verificado que ningún otro nodo la lee, sin efecto secundario.
+  - `build_default_deps()`: instancia real de `NodeDependencies` --
+    `OpenFoodToxStore` sobre el xlsx, colección Chroma persistente
+    (`data/chroma/`, `chromadb.PersistentClient`), `SentenceTransformer`
+    (`all-MiniLM-L6-v2`, el mismo modelo del indexado) y
+    `build_default_client()` (ya existente en `graph/llm_client.py`,
+    reutilizado sin duplicar -- lee `EFSA_RAG_LLM_BACKEND` del entorno).
+  - `answer_question(query: str) -> AnswerResult`: punto de entrada
+    simple pedido explícitamente. `deps`/grafo cacheados a nivel de
+    módulo (variables globales `_default_deps`/`_default_graph`,
+    inicializadas en la primera llamada) -- decisión propia, no pedida
+    literalmente así, para no recargar el modelo de embeddings ni
+    reabrir Chroma en cada pregunta; documentado en el propio código
+    por qué.
+    - **CAMBIO DE CONTRATO (sesión 18-ago-2026, continuación 11):
+      devuelve `AnswerResult` (dataclass: `answer: str`,
+      `retrieved_chunks: list[RetrievedChunk]`,
+      `structured_result: OpinionReference | None`), NO un `str` como
+      en la versión original.** Motivo -- existe específicamente para
+      poder AUDITAR FUNDAMENTACIÓN sin tener que reproducir el
+      retrieval a mano: en una sesión de verificación real (misma
+      sesión, antes de este cambio) se pidió confirmar si una mención
+      concreta de la respuesta ("Soffritti et al. 2006") aparecía de
+      verdad en algún `retrieved_chunk`, y como `answer_question` solo
+      devolvía el string, hubo que reconstruir la llamada a
+      `hybrid_retrieval_node` por separado con el mismo `substance_uuid`
+      y query para poder inspeccionarlo -- funcionó (sí aparecía,
+      chunk de la sección "2.7.1. Existing authorisations and
+      evaluations of aspartame"), pero no debería hacer falta
+      reproducir nada para verificar esto la próxima vez.
+      `retrieved_chunks`/`structured_result` en `AnswerResult` son los
+      MISMOS objetos que vio el Nodo 4 al construir el prompt (leídos
+      del estado final tras `.invoke(...)`), no una reconstrucción
+      aparte. `answer` sigue siendo el texto final -- esto no lo
+      sustituye, lo acompaña. **Verificado sin callers reales que
+      rompiera** (`grep` antes del cambio: ningún caller en
+      `ui/app.py`, tests o scripts esperaba el `str` de antes -- solo
+      invocaciones manuales sueltas de sesiones de verificación, nada
+      persistido). Re-verificado con una llamada real tras el cambio:
+      reproduce exactamente los mismos 5 `retrieved_chunks` que la
+      reconstrucción manual anterior, mismo orden -- confirma que el
+      retrieval es determinista para esta consulta.
+  - **Verificado en esta sesión (sin tocar la API):** `python -m
+    efsa_rag.graph.build` compila el grafo con un `NodeDependencies`
+    de relleno (todos los campos `None` -- seguro porque `deps` solo
+    se usa DENTRO de las funciones de nodo cuando el grafo se invoca de
+    verdad, nunca durante `.compile()`/`.get_graph()`) y dibuja el
+    Mermaid: `extract_entity -> hybrid_retrieval`, dos aristas
+    punteadas (condicionales) desde `hybrid_retrieval` hacia
+    `verify_currency` y hacia `generate_answer` directamente,
+    `verify_currency -> generate_answer -> __end__` -- coincide
+    exactamente con el diseño de arriba. Suite de tests completa
+    (23/23) sigue en verde con el módulo nuevo importado.
+  - **YA INVOCADO DE VERDAD (sesión 18-ago-2026, continuación 10):**
+    `answer_question("What is the ADI of aspartame and what study is
+    it based on?")` -- primera ejecución real de extremo a extremo
+    (Nodo 1 -> 2 -> 3 -> 4 en una sola llamada), no solo por nodos
+    separados. Respuesta completa, ADI/DOI/fecha correctos, cita
+    textual de `adi_justification`, margen de seguridad explicado
+    correctamente (sin la frase prohibida de "si se supera el ADI").
+    Fundamentación de una mención concreta de la respuesta
+    ("Soffritti et al. 2006") verificada contra `retrieved_chunks`
+    real -- aparece literalmente en el chunk de la sección "2.7.1.
+    Existing authorisations and evaluations of aspartame", confirmando
+    que el Nodo 4 no mezcló esa mención con conocimiento propio del
+    entrenamiento sin decirlo. Motivó el cambio de contrato de
+    `answer_question` (ver el bullet de arriba, `AnswerResult`) para
+    no tener que reproducir el retrieval a mano la próxima vez.
 - `ui/app.py` — candado de refresco + límites de consulta, funcional.
 - `tests/test_openfoodtox_joins.py` — test de regresión del caso
   aspartamo + test de columnas de ADI, **pasan los 3 contra el xlsx
@@ -1951,9 +2382,47 @@ Pendiente, en orden de menor a mayor incertidumbre:
    aditivos en forma gaseosa).
 2. Resolver la limitación conocida del Nodo 1: `substance_uuid_by_name`
    exige coincidencia exacta del nombre químico canónico en inglés — no
-   maneja español ("aspartamo") ni E-numbers ("E 951") todavía. Falta
-   verificar si `SUB` tiene un campo de E-number consultable antes de
-   implementar un fallback.
+   maneja español ("aspartamo") ni E-numbers ("E 951") todavía.
+   **VERIFICADO Y CERRADO (sesión 18-ago-2026, al diseñar el esquema de
+   metadatos de Chroma): `SUB` NO tiene ningún campo de E-number
+   consultable.** Columnas reales de la hoja: `Document UUID`,
+   `Definition`, `Parent UUID`, `ChemicalName`, `OwnerLegalEntity`,
+   `ReferenceSubstance.ReferenceSubstance`,
+   `TypeOfSubstance.Composition[.Other]`,
+   `TypeOfSubstance.Origin[.Other]` -- ninguna es un E-number,
+   confirmado inspeccionando la fila de aspartamo. **Implicación para
+   el fallback de E-numbers en el Nodo 1: no puede resolverse con un
+   lookup directo contra `SUB`** -- la única fuente de E-numbers en
+   todo el dataset es texto libre en `LiteratureReference.EFSAOutputTitle`
+   (vía el mismo patrón `E_NUMBER_PATTERN`/`e_numbers_from_title` ya
+   usado en `ingestion/pdf_naming.py` para el checklist de PDFs), y esa
+   extracción es POR DOSSIER, no por sustancia -- un dossier de grupo
+   (ej. tartratos, 5 E-numbers en el título, 7 sustancias resueltas
+   vía `substances_per_dossier`, ver "Hallazgos verificados") no tiene
+   un mapeo 1:1 fiable entre cada E-number citado y cada
+   `substance_uuid`. **Diseño futuro propuesto, NO implementado:** una
+   tabla auxiliar E-number -> `substance_uuid` derivada por separado
+   (con su propia verificación de los casos multi-sustancia, mismo
+   nivel de cuidado que el resto de heurísticos de título de este
+   proyecto), consultada por el Nodo 1 -- NO como metadato de Chroma
+   por chunk (decisión tomada explícitamente al diseñar el esquema de
+   metadatos, ver "Hallazgos verificados": el índice de retrieval usa
+   `chemical_name`/`substance_uuid`, no `e_number`, precisamente porque
+   esta limitación existe y no hay que mezclar un dato no verificado a
+   nivel de sustancia con los campos que sí lo son).
+   **Esta limitación SIGUE ABIERTA a nivel estructural, no la trates
+   como cerrada por el Nodo 1** (sesión 18-ago-2026, continuación 7,
+   ver `graph/nodes.py` en "Estado del código" más arriba): el Nodo 1
+   ya implementado pide al LLM que normalice español/E-numbers a
+   inglés ANTES de llamar a `substance_uuid_by_name`, y acertó en los
+   4 casos puntuales probados a mano (1 en español, 1 con E-number) --
+   pero es una mitigación parcial dependiente de que el LLM acierte la
+   normalización cada vez, verificada en un puñado de casos, NO una
+   solución sistemática ni una batería de pruebas amplia. La función
+   subyacente sigue sin poder resolver español/E-numbers por sí sola.
+   La tabla auxiliar E-number -> `substance_uuid` propuesta arriba
+   seguiría siendo la solución estructural si se necesita una garantía
+   real, no solo "probablemente funciona para casos comunes".
 3. **Integrar `END_SUM.Discussion.Discussion` en `OpinionReference`**,
    con el heurístico de detección de boilerplate ya validado en datos
    (ver "Hallazgos verificados": `len < 280` caracteres O duplicado
@@ -2051,14 +2520,133 @@ Pendiente, en orden de menor a mayor incertidumbre:
    siguiente paso, embeddings) no obliga a reprocesar los PDF ya
    hechos. Existe también `--save-preview` (JSON con ejemplos, para
    inspección puntual, no pensado para el corpus completo -- usar
-   `--save-jsonl` para eso). **Pendiente dentro de este mismo punto,
-   todavía sin implementar:** el paso de indexado en Chroma en sí
-   (embeddings + `chromadb`), que es el que de verdad desbloquea el
-   Nodo 2 -- `data/processed/chunks.jsonl` es el material de partida
-   para ese paso, no un índice vectorial consultable todavía.
-6. Detección de ambigüedad en el Nodo 3 (ver "Hallazgos verificados").
+   `--save-jsonl` para eso).
+   **Embeddings/Chroma -- COMPLETADO (sesión 18-ago-2026): corpus
+   completo indexado y verificado en `data/chroma/`.**
+   `ingestion/chroma_index.py` convierte filas de `chunks.jsonl` a
+   entradas de Chroma (`to_chroma_metadata`, `chroma_id`,
+   `compute_is_group_dossier`) -- esquema SIN `e_number`, ver el
+   bullet de "Hallazgos verificados" "ESQUEMA FINAL, IMPLEMENTADO"
+   para el porqué. `scripts/build_chroma_index.py` tiene 3 modos:
+   `--test-batch` (300 chunks, colección efímera en memoria, para
+   validar el diseño sin comprometerse al corpus completo),
+   `--all` (indexa los 67.827 en la colección PERSISTENTE, borrando
+   cualquier colección previa del mismo nombre antes -- no es
+   incremental), `--verify` (conecta a la colección persistente ya
+   creada y corre las consultas de verificación, sin reindexar --
+   útil para comprobar el índice en cualquier momento posterior).
+   **Corpus completo indexado de verdad, no solo proyectado:** 67.827
+   chunks, 2,97 min reales, `collection.count() == 67827` verificado,
+   597 MB en disco (`data/chroma/chroma.sqlite3`, colección
+   `efsa_reevaluation_chunks`). 3 consultas de verificación con temas
+   distintos (genotoxicidad, un caso específico conocido -- por qué se
+   retiró TiO2 como aditivo, generaliza a incertidumbre de exposición
+   dietética) -- las 3 con resultados temáticamente correctos, ver el
+   detalle completo en el bullet de modelo de embeddings en
+   "Decisiones de arquitectura ya tomadas" (incluida la advertencia
+   GPU-vs-CPU para el tiempo de reconstrucción en despliegue).
+   **Nodo 2 (`hybrid_retrieval_node`) CONECTADO A CHROMA (sesión
+   18-ago-2026, continuación 5)** -- ver `graph/nodes.py` en la lista
+   de arriba para el detalle de diseño e implementación. Este punto
+   (pendiente #5 de esta lista) queda completo de extremo a extremo:
+   chunking -> embeddings -> índice Chroma -> Nodo 2 consultándolo.
+6. **Detección de ambigüedad en el Nodo 3 -- DIFERIDO explícitamente
+   (sesión 18-ago-2026), con evidencia de prevalencia, no implementado
+   todavía y sin fecha de retomarlo salvo que cambie la evidencia.**
+   Contexto completo: antes de la primera ejecución real del grafo
+   ensamblado (`graph/build.py`), se auditó qué pasa hoy si
+   `verify_currency_node` encuentra un caso ambiguo (varias
+   `'EFSA opinion'` con fechas próximas, título no concluyente) --
+   respuesta: **ni excepción ni manejo real, se elige `MAX(fecha)` en
+   silencio, sin ninguna señal hacia el llamador** (`vigencia_ambigua`
+   NO cubre este caso pese al nombre -- ver el comentario en
+   `GraphState`/`verify_currency_node`, corregido en esta misma sesión
+   para que no parezca protección real). Antes de decidir si
+   implementarlo ahora o después, se pidió un diagnóstico de
+   prevalencia sobre el corpus real completo.
+   - **Metodología:** replicado el filtrado EXACTO de candidatos de
+     `current_reference_value_opinion` (mismos pasos: `VALID_OPINION_TYPES`,
+     rescate de dominio mal-etiquetado, exclusión de pienso animal),
+     pero sin el pick final de `MAX(fecha)` -- en su lugar, para cada
+     sustancia con 2+ candidatos supervivientes, se mide la distancia
+     en días entre el candidato ganador (el que `MAX(fecha)` elegiría)
+     y el más cercano de los demás. **Umbral de "ambiguo": 90 días**
+     (probado también a 30 días, mismo resultado en ambos) -- elegido
+     porque los dictámenes EFSA son eventos de adopción puntuales y
+     fechados; una separación de 3+ meses es muy improbable que sea un
+     artefacto del mismo evento (corrigendum, enmienda) y mucho más
+     probable que sea un paso regulatorio genuinamente distinto.
+     Metodología verificada contra el caso conocido de aspartamo antes
+     de confiar en ella: reproduce exactamente los 4 candidatos
+     esperados (2006, 2009×2, 2013 -- excluye correctamente el
+     statement de 2011).
+   - **Universo escaneado: 247 sustancias con enlace estructural
+     resoluble en el corpus de reevaluación -- prácticamente todo el
+     espacio de preguntas que el Nodo 3 puede responder hoy con el
+     corpus actual, no una muestra.**
+     - **Tier 1 (94 sustancias, con ADI resuelto):** 74 con un único
+       candidato superviviente (ambigüedad estructuralmente imposible),
+       0 sin ningún candidato, 20 con 2+ candidatos. **0 de esas 20
+       caen dentro de 90 días** (ni de 30). El gap más pequeño de las
+       94: **106 días** (Propane-1,2-diol, 2 candidatos) -- el segundo
+       más pequeño, 182 días (Steviol glycosides, 7 candidatos). El
+       resto, 280+ días, la mayoría 900+ días (2,5+ años -- ej. las 6
+       sales de glutamato, todas a 924 días).
+     - **Tier 2/3 (153 sustancias adicionales, sin ADI numérico --
+       `require_adi=False` menos las 94 de tier 1, más Shellac vía
+       tier 3):** 125 con un único candidato o una sola fecha
+       parseable, 3 sin ningún candidato tras los filtros (caso ya
+       manejado -- `current_reference_value_opinion` devuelve `None`,
+       Node 4 ya lo comunica explícitamente, no es el caso de
+       ambigüedad), 25 con 2+ candidatos. **0 de esas 25 caen dentro
+       de 90 días** (ni de 30). El gap más pequeño: **160 días**
+       (Beetroot Red/betanin, 2 candidatos) -- el resto, 246+ días.
+     - **Total combinado: 0/247 sustancias ambiguas a 90 días, 0/247 a
+       30 días.** El gap real más pequeño de TODO el corpus es 106
+       días -- ningún caso cerca del umbral que hiciera dudar de la
+       elección de 90 días sobre, digamos, 60 o 120.
+   - **CAVEAT EXPLÍCITO, no ocultar: esto es una foto del corpus tal
+     como está hoy (162 dictámenes, export de OpenFoodTox usado en
+     este proyecto), no una garantía permanente.** El programa de
+     reevaluación sigue activo (ver "Hallazgos verificados" más
+     arriba, sección de cobertura del corpus -- follow-ups de plata
+     E174, Patent Blue V E131, almidones modificados, entre otros
+     conocidos en curso). Un futuro follow-up publicado cerca en el
+     tiempo de un dictamen ya existente para la misma sustancia SÍ
+     podría producir el caso ambiguo que hoy no existe -- este
+     diagnóstico no lo descarta para siempre, solo confirma que no ha
+     pasado todavía con los datos disponibles.
+   - **Por qué se difiere, no por qué no importa:** impacto
+     verificado = cero incidentes reales hasta hoy, frente a trabajo
+     con impacto YA conocido y pendiente en esta misma lista (Nodo 4
+     sin re-probar contra la API con el prompt actual -- pendiente #9;
+     servidor MCP sin empezar -- pendiente #7; deploy -- pendiente #8).
+     Implementar detección de ambigüedad ahora sería trabajo especulativo
+     sobre un caso con prevalencia empírica de 0/247 en vez de sobre
+     huecos con impacto ya confirmado. Si el corpus cambia
+     (nuevos follow-ups) o aparece un caso real, re-ejecutar este mismo
+     diagnóstico (no hay script permanente guardado -- fue una
+     investigación puntual, replicable con el mismo método descrito
+     arriba) antes de decidir si sigue siendo seguro diferirlo.
 7. Servidor MCP (`mcp/`, carpeta vacía todavía).
 8. Deploy siguiendo la Opción A descrita arriba.
+9. **Re-probar el Nodo 4 con llamada real a la API usando el prompt
+   actual -- PARCIALMENTE HECHO (sesión 18-ago-2026, continuación 10),
+   no cerrar del todo.** `answer_question(...)` de extremo a extremo
+   con aspartamo SÍ ejercitó `retrieved_chunks` NO vacío (5 fragmentos
+   reales) y el campo `discussion_text` (con
+   `discussion_is_boilerplate=True` para este caso concreto,
+   correctamente omitido del texto citado). **NO ejercitó** el mensaje
+   de "motivos opuestos" para ADI sin valor (aspartamo SÍ tiene ADI,
+   camino tier 1 -- haría falta una consulta sobre una sustancia tier 2,
+   ej. TiO2, para probar esa rama) ni el aviso de tier 3 en
+   `_format_retrieved_chunks` (los 5 fragmentos de aspartamo son todos
+   tier 1 -- haría falta una consulta sobre Shellac o el statement de
+   sucralosa para ejercitar esa rama). Sigue sin existir ningún test
+   automatizado de `generate_answer_node`/`answer_question` en
+   `tests/test_nodes.py` (mismo patrón que los Nodos 1 y 2) -- solo
+   verificación manual puntual hasta ahora, en las dos sesiones donde
+   se ha probado (16-ago-2026 y 18-ago-2026).
 
 **Por qué el punto 3 pasa por delante de PDFs/chunking/Chroma:**
 `Discussion.Discussion` (hoja `END_SUM`, enlace verificado con el mismo

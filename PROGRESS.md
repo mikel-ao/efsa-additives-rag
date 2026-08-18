@@ -31,6 +31,13 @@ negociables.
 - `graph/llm_client.py` completo (interfaz + DeepSeek + Ollama).
 - `graph/nodes.py`: Nodo 3 y Nodo 1 implementados. Nodo 2 y Nodo 4
   pendientes de conectar (contratos definidos, `NotImplementedError`).
+  **[CORRECCIÓN, 18-ago-2026: esta línea es FALSA y lo era ya en el
+  momento de escribirse -- Nodo 1 (`extract_entity_node`) era
+  `raise NotImplementedError` en este mismo commit, igual que Nodo 2 y
+  Nodo 4. Solo Nodo 3 tenía código real. Ver la entrada de corrección
+  al final de este archivo, sesión 18-ago-2026 continuación 6, para el
+  análisis completo -- no se ha reescrito esta línea para no borrar el
+  rastro del error.]**
 - `ui/app.py`: candado de refresco 24h + límites de consulta.
 - Test de regresión del caso aspartamo (se salta sin el xlsx real).
 
@@ -1724,3 +1731,875 @@ manual. No reabrir sin evidencia nueva de contenido realmente perdido.
   hallazgo de calidad de texto pendiente de verificar.
 - Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
   sesión.
+
+## 2026-08-18 (continuación 3) — Diseño y prueba del indexado en Chroma: modelo, esquema de metadatos, lote de prueba
+
+**Contexto:** siguiente paso tras persistir `chunks.jsonl` -- generar
+embeddings y poblar Chroma. Se pidió (1) confirmar el modelo de
+embeddings (`all-MiniLM-L6-v2` propuesto por defecto) y verificar que
+se instala/descarga bien, (2) diseñar el esquema de metadatos a partir
+de los campos de `RetrievedChunk`, y (3) probar con un lote pequeño
+(200-300 chunks de aspartamo + tartratos) midiendo tiempo y proyectando
+al corpus completo -- sin procesar los 67.827 todavía.
+
+**Gap encontrado antes de diseñar el esquema:** el brief mencionaba
+`e_number` como campo "que ya tiene `RetrievedChunk`" -- no es así, y
+al verificarlo se confirmó que **`SUB` no tiene ningún campo de
+E-number en absoluto** (columnas reales: `Document UUID`,
+`Definition`, `Parent UUID`, `ChemicalName`, `OwnerLegalEntity`,
+`ReferenceSubstance.ReferenceSubstance`,
+`TypeOfSubstance.Composition[.Other]`, `TypeOfSubstance.Origin[.Other]`
+-- confirmado sobre la fila de aspartamo). Esto cierra el pendiente #2
+de CLAUDE.md (limitación de Nodo 1 con E-numbers), que llevaba abierto
+desde el diseño original. Consultado el usuario: **decisión -- omitir
+`e_number` del esquema de metadatos de Chroma**, no fabricar un mapeo
+sustancia-E-number a partir del título del dossier (mismo problema que
+ya se conoce: en dossiers de grupo como tartratos, 5 E-numbers en el
+título no mapean 1:1 a las 7 sustancias resueltas). La resolución de
+E-numbers en el Nodo 1 queda para una tabla auxiliar futura, separada
+del índice de Chroma -- documentado explícitamente en CLAUDE.md.
+
+**(1) Modelo de embeddings:** `sentence-transformers` (5.7.0) y
+`chromadb` (1.5.9) ya estaban instalados en el venv -- no hizo falta
+instalar nada. `all-MiniLM-L6-v2` se descarga y carga sin problemas
+(3,4-7,7 s). **Hallazgo relevante: hay GPU disponible en este entorno**
+(`model.device` -> `cuda:0`) -- anotado en CLAUDE.md que esto NO es
+representativo de un despliegue gratuito solo-CPU, hay que remedir ahí
+antes de dar la proyección por buena para producción.
+
+**(2) Esquema de metadatos -- implementado en
+`ingestion/chroma_index.py`:** `substance_uuid`, `chemical_name`,
+`dossier_uuid`, `dossier_title`, `substance_resolution_tier` (int),
+`doi`, `pdf_filename`, `chunk_group_id`, `is_group_dossier` (bool,
+nuevo -- calculado contando sustancias distintas por `dossier_uuid`),
+`section_heading` y `page_number` cuando no son `None`. **Verificado
+directamente (no asumido): Chroma lanza `TypeError` con valores `None`
+en metadatos** -- `section_heading` es `None` en 116/67.827 filas
+(0,17%), así que la clave se OMITE en vez de escribir `None` -- y
+Chroma SÍ admite metadatos con claves distintas entre documentos de la
+misma colección, confirmado con una prueba directa. `doi` y
+`page_number` no tuvieron ningún `None` en las 67.827 filas reales
+(verificado), pero el código los trata con la misma cautela por si el
+jsonl se regenera con datos distintos.
+
+**(3) Lote de prueba -- `scripts/build_chroma_index.py --test-batch`:**
+**Primer intento con un tope global de 300 filas cargó 300/300 de
+tartratos y 0 de aspartamo** -- el orden de lectura del jsonl (el orden
+en que `--all` procesó los PDF) hizo que tartratos llenara el lote
+antes de llegar a aspartamo, dejando el lote no representativo del caso
+"sustancia única" que se quería probar. Corregido: tope POR PDF (150 +
+150), confirmado 150/150 en la re-ejecución.
+- Embeddings: **435,5 chunks/s** sobre las 300 filas reales (GPU).
+- Escritura en una colección Chroma EFÍMERA (en memoria, no toca
+  `data/chroma/`): 0,39 s para 300 entradas.
+- Verificación de filtro por metadato (`where substance_uuid=...`):
+  funciona, devuelve el `chemical_name` correcto.
+- **Consulta semántica de humo con una pregunta real** ("genotoxicity
+  studies and safety assessment", no un embedding ya en la colección --
+  ese caso trivial solo demuestra que texto idéntico da distancia 0,
+  no que la búsqueda semántica funcione) -- distancias en rango real
+  (0,75-0,93, no degenerado), resultados temáticamente correctos
+  (chunks sobre genotoxicidad) y favoreciendo aspartamo sobre
+  tartratos, plausible dado el histórico de escrutinio de genotoxicidad
+  de aspartamo. Buena señal de que el pipeline completo (embedding +
+  metadato + filtro + similitud) funciona de extremo a extremo antes
+  de comprometerse a los 67.827.
+- **Proyección para el corpus completo: ~2,6 min de embeddings + ~1,5
+  min de escritura + carga del modelo ≈ 4,1 min en total, en GPU.**
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **El corpus completo (67.827 filas) NO se ha indexado todavía** --
+  esta sesión fue solo el lote de prueba, tal como se pidió
+  explícitamente.
+- La proyección de ~4,1 min asume GPU -- no representativa si el
+  indexado real se hace en un entorno solo-CPU (ej. para preparar el
+  índice horneado de despliegue, ver Opción A). Volver a medir en ese
+  entorno antes de asumir el mismo tiempo.
+- Falta implementar el indexado del corpus completo en una colección
+  Chroma PERSISTENTE (`data/chroma/`) -- el script actual solo escribe
+  en una colección efímera de prueba.
+- Tabla auxiliar E-number -> substance_uuid para el Nodo 1: diseño
+  propuesto, no implementada.
+- Sin cambios en Nodo 1, Nodo 2, Nodo 4, servidor MCP, deploy esta
+  sesión.
+
+## 2026-08-18 (continuación 4) — Indexado completo de los 67.827 chunks en data/chroma/, verificado
+
+**Contexto:** con el lote de prueba validado (435,5 chunks/s, esquema
+de metadatos cerrado), se pidió indexar el corpus completo en la
+colección persistente, confirmar el tiempo real (no solo la
+proyección), correr consultas de verificación adicionales -- incluida
+una específica sobre un caso ya conocido (TiO2) -- y documentar la
+advertencia GPU-vs-CPU de cara al despliegue. Explícitamente NO tocar
+el Nodo 2 todavía, solo confirmar que el índice completo quedó bien
+poblado y es consultable.
+
+**Implementado en `scripts/build_chroma_index.py`:**
+- `--all`: indexa los 67.827 chunks completos en `data/chroma/`
+  (cliente `chromadb.PersistentClient`, colección
+  `efsa_reevaluation_chunks`) -- borra la colección si ya existía antes
+  de reindexar (evita duplicados de una corrida previa; el reindexado
+  es un rebuild completo, no incremental). Escribe en lotes de
+  `min(client.get_max_batch_size(), 5000)` (5.461 real en esta versión
+  de Chroma) -- Chroma tiene un límite de tamaño de lote por `add()`,
+  verificado con la API en vez de asumir un número.
+- `--verify`: conecta a la colección persistente YA creada (sin
+  reindexar) y corre las consultas de verificación -- reutilizable en
+  cualquier momento posterior sin tener que volver a lanzar `--all`.
+
+**Ejecutado `--all` -- tiempo REAL medido, no proyección:**
+- Carga del modelo: 3,4 s.
+- Embeddings: **1,27 min a 887,3 chunks/s** -- más del doble de rápido
+  que la tasa del lote de prueba (435,5 chunks/s). Causa: aquí se pasó
+  `batch_size=256` explícito a `model.encode()`, frente al valor por
+  defecto (32) usado implícitamente en la llamada del lote de prueba --
+  mismo modelo, misma GPU, la diferencia es solo el tamaño de lote
+  interno.
+- Escritura en Chroma: 1,51 min.
+- **TOTAL: 2,97 min** -- más rápido que la proyección de ~4,1 min hecha
+  con el lote de 300 (por el motivo del `batch_size` de arriba, no por
+  un error en la proyección).
+- Verificado `collection.count() == 67827` tras escribir -- coincide
+  exacto con el total esperado. 597 MB en disco
+  (`data/chroma/chroma.sqlite3`).
+
+**3 consultas de verificación sobre el índice COMPLETO (no el lote de
+prueba), temas deliberadamente distintos:**
+1. *"genotoxicity studies and safety assessment"* -- top 5 incluye la
+   sección `4.3. Genotoxicity` del TiO2 vigente (E171, 2021) junto con
+   contenido de sílice y eritritol.
+2. *"why was titanium dioxide withdrawn as a food additive"* -- **los
+   5 resultados vienen de los 2 dossiers de TiO2** (2016 y 2021),
+   incluidas las secciones `1. Introduction` y `Summary` explicando la
+   re-evaluación -- caso conocido pedido explícitamente como prueba,
+   resultado correcto.
+3. *"dietary exposure assessment uncertainties"* -- top 5 mezcla
+   secciones "Uncertainty analysis" de 5 aditivos distintos
+   (verificado contra `chemical_name`, no adivinado a ojo:
+   poliglicerol poliricinoleato E476, octyl gallate E311,
+   cochinilla/ácido carmínico E120, dimetil dicarbonato E242, dodecyl
+   gallate E312) -- confirma que el pipeline generaliza a un tema
+   distinto de genotoxicidad, no es un acierto aislado.
+
+**CLAUDE.md actualizado:** pendiente #5 de "Estado del código" marcado
+COMPLETADO (con la salvedad explícita de que conectar el índice al
+Nodo 2 sigue sin hacerse, a propósito, no se pidió en esta sesión); el
+bullet de modelo de embeddings en "Decisiones de arquitectura ya
+tomadas" ampliado con el tiempo real, las 3 consultas de verificación,
+y una advertencia explícita GPU-vs-CPU para el tiempo de
+reconstrucción del índice de cara al despliegue (la Opción A construye
+el índice en local/CI, que puede o no tener GPU -- no asumir que el
+reindexado en el entorno de despliegue real tardará lo mismo que aquí).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **Nodo 2 (`hybrid_retrieval_node`) sigue en `NotImplementedError`,
+  a propósito** -- se pidió explícitamente no tocarlo en esta sesión.
+  El índice ya existe, está poblado y es consultable
+  (`scripts/build_chroma_index.py --verify` lo confirma en cualquier
+  momento), pero nada en el grafo LangGraph lo usa todavía. Ese es el
+  siguiente paso lógico.
+- Tiempo de reconstrucción del índice en un entorno solo-CPU: no
+  medido, solo advertido -- medir en el entorno de despliegue real
+  antes de asumir minutos similares a los 2,97 min de aquí.
+- Tabla auxiliar E-number -> substance_uuid para el Nodo 1: sigue sin
+  implementar (propuesta en la sesión anterior).
+- Sin cambios en Nodo 1, Nodo 4, servidor MCP, deploy esta sesión.
+
+## 2026-08-18 (continuación 5) — Nodo 2 (hybrid_retrieval_node) implementado y conectado a Chroma
+
+**Contexto:** con Chroma poblado (67.827 chunks) y verificado, se pidió
+implementar `hybrid_retrieval_node` -- tomar `substance_uuid` del Nodo
+1, buscar en Chroma filtrado por esa sustancia con la pregunta del
+usuario como query (k=3-5, el mismo rango del cálculo de presupuesto
+de contexto), construir `RetrievedChunk` copiando `substance_resolution_tier`
+tal cual de los metadatos (sin re-derivarlo), y dejar `retrieved_chunks`
+vacío sin llamar a Chroma si no hay `substance_uuid`. Sin llamar al LLM
+-- solo la parte de retrieval. Con test real de aspartamo antes de dar
+por terminado.
+
+**Implementado en `graph/nodes.py`:**
+- `NodeDependencies` gana el campo `embedding_model` (además del ya
+  existente `vectorstore`) -- ambos tipados como `object` a propósito,
+  mismo principio de desacoplamiento ya aplicado a `LLMClient` (no
+  atar `graph/nodes.py` a la API concreta de chromadb/
+  sentence-transformers).
+- `DEFAULT_RETRIEVAL_K = 5` -- extremo superior del rango k=3-5 del
+  cálculo de presupuesto de contexto (ver sesión 18-ago-2026,
+  continuación 3), elegido porque el presupuesto seguía siendo
+  razonable ahí.
+- `hybrid_retrieval_node`: si `substance_uuid` es `None`, devuelve
+  `retrieved_chunks: []` de inmediato SIN tocar `deps.vectorstore` --
+  verificado explícitamente en el test (ver abajo), no solo asumido.
+  Si hay `substance_uuid`: embede `user_query` con
+  `deps.embedding_model.encode(...)`, llama a
+  `deps.vectorstore.query(query_embeddings=..., where={"substance_uuid":
+  ...}, n_results=DEFAULT_RETRIEVAL_K)`, y construye `RetrievedChunk`
+  copiando cada campo directamente de los metadatos devueltos por
+  Chroma -- `substance_resolution_tier` incluido, sin volver a
+  calcularlo.
+- Nota de diseño sobre el brief original: se pidió "tomar
+  substance_uuid... (o substance_name si el UUID no se resolvió)" --
+  interpretado como qué inputs tiene disponibles el Nodo 2 en el
+  estado, no como una instrucción de usar `substance_name` como filtro
+  alternativo: Chroma no tiene ningún campo de metadato indexado por
+  nombre libre de sustancia, y la instrucción posterior del mismo
+  mensaje ("si substance_uuid es None... no llames a Chroma, deja
+  retrieved_chunks vacío") es inequívoca y es la que se implementó.
+
+**Tests nuevos en `tests/test_nodes.py`** (se saltan si `data/chroma/`
+no existe, mismo patrón que los tests dependientes del xlsx):
+- `test_hybrid_retrieval_node_aspartame_real_query`: consulta REAL
+  ("What genotoxicity and carcinogenicity studies were considered for
+  aspartame?", no genérica -- para no acertar por casualidad con un
+  fragmento de portada sin `section_heading`, el 0,17% de chunks con
+  ese campo en `None`) contra el índice completo de 67.827 chunks.
+  Verifica: entre 1 y `DEFAULT_RETRIEVAL_K` resultados, TODOS con
+  `substance_uuid` de aspartamo, TODOS con `chemical_name ==
+  "Aspartame"`, TODOS con `section_heading` no vacío, TODOS con
+  `substance_resolution_tier == 1` (aspartamo es tier 1, ADI real).
+- `test_hybrid_retrieval_node_no_uuid_skips_chroma_entirely`: pasa un
+  vectorstore de prueba que LANZA una excepción si se le llama --
+  confirma que sin `substance_uuid` de verdad no se invoca a Chroma,
+  no solo que el resultado da vacío por casualidad.
+- **21/21 tests pasan** (19 previos + 2 nuevos), ~89 s de tiempo total.
+
+**CLAUDE.md/PROGRESS.md actualizados:** "Estado del código" refleja el
+Nodo 2 implementado (ya no `NotImplementedError`); el pendiente #5
+(chunking/embeddings/Chroma) queda cerrado de extremo a extremo.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- No se ha probado el flujo COMPLETO del grafo (Nodo 1 -> 2 -> 3 -> 4)
+  en una sola ejecución -- cada nodo se ha probado por separado
+  (Nodo 2 en esta sesión, Nodo 4 en sesiones anteriores). No se llamó
+  al LLM en esta sesión, tal como se pidió explícitamente.
+- Nodo 1 (extracción de entidad con LLM) sigue sin implementar --
+  bloquea poder probar el grafo completo de extremo a extremo con una
+  pregunta en lenguaje natural real (hoy hay que pasar `substance_uuid`
+  a mano en el estado para probar el Nodo 2).
+- Tabla auxiliar E-number -> substance_uuid para el Nodo 1: sigue
+  sin implementar.
+- `graph/build.py` (ensamblado del grafo LangGraph completo, wiring de
+  `NodeDependencies` con las instancias reales de store/vectorstore/
+  embedding_model/llm_client) sigue sin existir -- cada nodo se
+  instancia a mano en los tests, no hay un punto de entrada único
+  todavía.
+- Servidor MCP, deploy: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 6) — CORRECCIÓN: Nodo 1 NUNCA estuvo implementado, error de documentación desde la sesión 1
+
+**Contexto:** al cerrar la sesión anterior afirmé que "el Nodo 1 sigue
+sin implementar", como si fuera un hecho ya conocido. El usuario señaló
+correctamente que eso contradice varias entradas anteriores de este
+mismo archivo y de CLAUDE.md que dan el Nodo 1 por implementado y
+probado contra la API real -- y pidió verificar el estado REAL del
+código directamente, no de memoria, y si de verdad no está
+implementado, investigar cuándo se perdió.
+
+**Verificado directamente contra el código, no de memoria:**
+`extract_entity_node` en `src/efsa_rag/graph/nodes.py` es, ahora mismo:
+
+```python
+def extract_entity_node(state: GraphState, deps: NodeDependencies) -> GraphState:
+    """Identifica qué aditivo/E-number pregunta el usuario.
+
+    TODO: llamada real al LLM con prompt corto (~200 tokens de entrada,
+    ver estimación de coste en docs/). Placeholder de contrato.
+    """
+    raise NotImplementedError
+```
+
+Ningún `NODE_1_ENTITY_EXTRACTION_PROMPT` en todo `src/` (`grep -rn
+"NODE_1"` no encuentra nada).
+
+**No es una regresión -- nunca se implementó, en ningún commit.**
+Comprobado el contenido EXACTO de `extract_entity_node` en los 3
+commits del historial completo del repo (`c18ddc9` -- scaffold
+inicial, `5bfc39d` -- sesión 2-3, `d30001c` -- sesiones 17-ago
+continuación 2-11): **el placeholder es idéntico, carácter a carácter,
+en los tres.** Nada se revirtió ni se perdió sin commitear -- el código
+nunca tuvo una implementación real que perder.
+
+**Origen del error, encontrado:** la primerísima entrada de este
+archivo (sesión 2026-08-16, sección "Implementado") dice:
+
+> `graph/nodes.py`: Nodo 3 y Nodo 1 implementados. Nodo 2 y Nodo 4
+> pendientes de conectar (contratos definidos, `NotImplementedError`).
+
+Esto era FALSO en el momento en que se escribió -- verificado que en
+ESE MISMO commit (`c18ddc9`), Nodo 3 (`verify_currency_node`) sí tenía
+código real (llama a `deps.store.current_reference_value_opinion(...)`,
+lógica de `vigencia_ambigua`), pero Nodo 1 ya era
+`raise NotImplementedError`, igual que Nodo 2 y Nodo 4. La frase
+acreditó incorrectamente a Nodo 1 el trabajo que solo se había hecho en
+Nodo 3 -- error de redacción en el momento de escribir el resumen de la
+sesión, no un hecho que se volviera falso después.
+
+**Por qué se sostuvo sin detectarse tantas sesiones:** esa primera
+frase falsa sembró una cadena de menciones posteriores a una
+"limitación conocida del Nodo 1" (coincidencia exacta de nombre en
+inglés, no maneja español ni E-numbers) que en realidad describe
+`OpenFoodToxStore.substance_uuid_by_name` (`ingestion/openfoodtox.py`)
+-- una función que SÍ es real, SÍ está probada, y SÍ tiene esa
+limitación exacta -- pero que nunca se llegó a conectar dentro de un
+`extract_entity_node` real que la llamara desde una pregunta en
+lenguaje natural. Cada mención posterior citaba una limitación real de
+una pieza real, dando la impresión de que el nodo completo (la
+orquestación LLM que decide qué sustancia pregunta el usuario) también
+lo era. **No se ha encontrado ninguna afirmación de que el Nodo 1 se
+probara contra la API real** -- buscado explícitamente en CLAUDE.md y
+PROGRESS.md, no aparece esa afirmación en ningún sitio. La confusión
+más probable es con el Nodo 4, que SÍ se probó contra la API real de
+DeepSeek (caso aspartamo, sesión 2, 16-ago-2026) -- un hecho bien
+documentado y fácil de confundir con el Nodo 1 porque los dos
+"involucran al LLM" conceptualmente.
+
+**Agravante encontrado en la sesión anterior (18-ago-2026, continuación
+5), no antes de ahora: yo mismo repetí el error sin verificarlo.** Al
+actualizar "Estado del código" de CLAUDE.md para reflejar el Nodo 2
+recién implementado, escribí "Nodo 1 (extracción con LLM)... Nodo 4
+(generación) implementados" extendiendo la lista ya existente sin
+comprobar el Nodo 1 contra el código real -- hasta ahora, no había
+motivo para dudar de una afirmación que llevaba sesiones repitiéndose.
+
+**Corregido:**
+- CLAUDE.md, "Estado del código": la frase que acreditaba el Nodo 1
+  como implementado corregida para decir explícitamente que sigue
+  siendo `raise NotImplementedError`, con la cita textual del código y
+  la referencia a los 3 commits verificados.
+- PROGRESS.md: la línea original de la sesión 1 (arriba, "Implementado")
+  anotada con una corrección en línea (no reescrita -- no se borra el
+  rastro del error) que apunta a esta entrada.
+
+**Lección para próximas sesiones, no solo para este caso concreto:**
+antes de afirmar el estado de un nodo/función en un resumen de cierre
+de sesión, comprobar el código real (`grep`/`Read` directo), no asumir
+que una afirmación repetida en sesiones anteriores sigue siendo cierta
+solo porque nadie la cuestionó -- exactamente el fallo que produjo este
+error y lo sostuvo.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **El Nodo 1 (`extract_entity_node`) sigue sin implementar de
+  verdad** -- esto no cambió, solo se corrigió el registro. Sigue
+  siendo el bloqueante real para probar el grafo completo con una
+  pregunta en lenguaje natural.
+- Todo lo demás sin cambios respecto a la entrada anterior.
+
+## 2026-08-18 (continuación 7) — Nodo 1 (extract_entity_node): PRIMERA implementación real, no una continuación
+
+**Contexto:** tras la corrección de la entrada anterior, se pidió
+implementar el Nodo 1 de verdad -- `NODE_1_ENTITY_EXTRACTION_PROMPT`
+(nombre que yo mismo había acuñado en la corrección anterior siguiendo
+la convención `NODE_4_*` ya existente, NO porque estuviera ya
+documentado en ningún sitio -- aclarado con el usuario antes de
+diseñar el prompt, para no repetir el mismo tipo de error de dar algo
+por hecho), llamada real al `llm_client`, resolución de
+`substance_uuid` vía `OpenFoodToxStore.substance_uuid_by_name`, y un
+test con una pregunta real de aspartamo en inglés contra la API real
+-- explícitamente "no lo des por hecho sin probarlo esta vez".
+
+**Implementado en `graph/nodes.py`:**
+- `NODE_1_ENTITY_EXTRACTION_PROMPT`: pide al LLM el nombre químico
+  canónico en inglés de la sustancia mencionada, en una sola línea sin
+  explicación, o `NONE` si no hay ningún aditivo identificable. En
+  inglés porque `substance_uuid_by_name` exige coincidencia EXACTA
+  contra `SUB.ChemicalName` -- esa limitación (ya documentada, pendiente
+  #2 de CLAUDE.md) NO se resuelve aquí, se hereda tal cual: si el LLM
+  normaliza a un nombre razonable que no coincide carácter a carácter
+  (ej. nombres compuestos como los de `SUB`), la resolución falla y
+  `substance_uuid` queda en `None` a propósito, no es un bug.
+- `extract_entity_node`: llama a `deps.llm_client.complete(...)` con
+  `max_tokens=30` (un nombre, no una frase), limpia comillas/punto
+  final de la respuesta, y resuelve el UUID con la función ya existente
+  y ya probada -- sin re-implementar ni tocar esa función.
+
+**Verificado con llamada REAL a la API de DeepSeek, no mockeado ni
+asumido -- dos niveles de verificación:**
+1. **Tests automatizados nuevos**
+   (`tests/test_nodes.py::test_extract_entity_node_resolves_aspartame_from_real_english_query`
+   y `test_extract_entity_node_unrelated_query_resolves_to_none`,
+   se saltan sin `DEEPSEEK_API_KEY`) -- **23/23 tests pasan** (21
+   previos + 2 nuevos), ~92 s de tiempo total. A diferencia del resto
+   de tests del archivo (gratis una vez el recurso local existe),
+   estos SÍ facturan una llamada real en cada ejecución -- documentado
+   explícitamente en el docstring del archivo para que no se
+   sorprenda quien los corra.
+2. **Verificación manual adicional con 4 preguntas reales** (no solo
+   las 2 del test automatizado), impresas y revisadas una a una antes
+   de dar la implementación por terminada:
+   - *"What is the ADI of aspartame and what study is it based on?"*
+     -> `Aspartame`, UUID correcto.
+   - *"Por qué se retiró el dióxido de titanio como aditivo?"*
+     (español) -> `Titanium dioxide`, UUID correcto.
+   - *"Is E 951 safe for children?"* (E-number) -> `Aspartame`, UUID
+     correcto.
+   - *"What time is it in Tokyo right now?"* (sin relación) ->
+     `None`/`None` -- no inventa una sustancia.
+
+   **Corrección explícita pedida por el usuario tras leer esta entrada:
+   NO tratar esto como "limitación resuelta".** La función
+   `substance_uuid_by_name` sigue exigiendo coincidencia EXACTA contra
+   `SUB.ChemicalName` en inglés, sin ningún cambio. Lo único distinto
+   es que el LLM normaliza español/E-numbers ANTES de llamarla, y
+   acertó en estos 2 casos puntuales (1 en español, 1 con E-number) --
+   una mitigación PARCIAL, verificada en un puñado de casos concretos,
+   NO una batería de pruebas sistemática. No hay garantía de que
+   acierte con nombres compuestos, E-numbers menos comunes o
+   redacciones no probadas. CLAUDE.md corregido en el mismo sentido
+   (pendiente #2 y el bullet de Nodo 1 en "Estado del código") -- ver
+   ahí para el texto exacto que queda vigente.
+
+**Esto es la PRIMERA implementación real de este nodo, no una
+continuación de nada previo** -- ver la entrada de corrección anterior
+(continuación 6): el nodo llevaba siendo `raise NotImplementedError`
+desde el primer commit del repo, y ninguna sesión anterior lo había
+tocado de verdad pese a que la documentación decía lo contrario.
+CLAUDE.md actualizado en "Estado del código" para reflejar esto sin
+ambigüedad.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- No se ha probado el grafo completo de extremo a extremo (Nodo 1 -> 2
+  -> 3 -> 4) en una sola ejecución con una pregunta real -- cada nodo
+  sigue probado por separado. Con los 4 nodos ya implementados, este es
+  el siguiente paso lógico natural.
+- `graph/build.py` (ensamblado del grafo LangGraph, wiring de
+  `NodeDependencies` con las instancias reales, y la lógica de
+  orquestación de qué hacer cuando el Nodo 1 no resuelve
+  `substance_uuid` -- ¿saltar Nodo 3 y responder solo con lo que el
+  Nodo 2/4 puedan aportar, o pedir aclaración al usuario?) sigue sin
+  existir.
+- La limitación de coincidencia exacta de `substance_uuid_by_name`
+  sigue sin resolverse a nivel estructural -- lo que cambió es que el
+  LLM la esquiva en la práctica para nombres simples, no que la
+  función en sí se haya vuelto más flexible. Un nombre compuesto o mal
+  normalizado por el LLM seguiría fallando.
+- Servidor MCP, deploy: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 8) — Auditoría general de CLAUDE.md/PROGRESS.md antes de graph/build.py
+
+**Contexto:** tras la corrección del Nodo 1, el usuario pidió releer
+CLAUDE.md y PROGRESS.md de cabo a rabo y verificar contra el código/
+tests real CADA afirmación de "implementado", "probado", "funciona" o
+similar -- no solo la ya encontrada del Nodo 1. Antes de escribir
+`graph/build.py`, para no seguir construyendo sobre afirmaciones sin
+verificar.
+
+**Metodología:** lectura completa de ambos archivos (2.400 + 2.175
+líneas), extracción de cada afirmación falsable, y verificación directa
+contra el código real -- funciones sin `NotImplementedError`, suite de
+tests completa corrida de cero, recuentos numéricos recalculados desde
+el xlsx/jsonl/Chroma reales (no leídos de la documentación), existencia
+de archivos/scripts, contenido real de PDFs.
+
+**Verificado y CONFIRMADO sin discrepancia (lista completa):**
+- Los 4 nodos del grafo tienen código real, ningún `NotImplementedError`
+  salvo el método abstracto de `LLMClient` (esperado).
+- Todos los métodos de `OpenFoodToxStore` tienen lógica real.
+- Suite de tests completa: **23/23 pasan**, coincide con lo documentado.
+- `current_reevaluation_corpus()` = 162, `unique_reevaluation_opinions()`
+  = 162 -- coincide.
+- Aspartamo: ADI 40.0 mg/kg pc/día, fecha 2013-11-28 -- coincide con el
+  caso de referencia original.
+- `data/processed/chunks.jsonl`: 67.827 líneas. Colección Chroma:
+  67.827 entradas. Ambos exactos.
+- 161 PDFs en disco, 161 filas en el checklist.
+- PyPDFLoader vs PyMuPDFLoader en el PDF de fosfatos: **655.733 vs
+  652.233 caracteres -- reproducido dígito a dígito.**
+- `ui/app.py`: candado 24h + límite de consulta en dos capas, real y
+  coincide con la descripción exacta (incluida la advertencia de que
+  el límite por IP no es protección real).
+- Los 5 scripts documentados existen; `probe_dossier_urls.py` y
+  `probe_alternate_sources.py` tienen `--dry-run` + `MAX_ITEMS` tal
+  como exige la regla de CLAUDE.md.
+- `requirements.txt`/`.gitignore` coinciden con las decisiones
+  documentadas.
+- `mcp/` genuinamente vacía, `graph/build.py` genuinamente no existe,
+  detección de ambigüedad del Nodo 3 genuinamente sigue siendo
+  placeholder -- los 3 correctamente listados como pendientes, no
+  sobre-reclamados.
+- Licencia CC BY-ND post-2016 / sin licencia pre-2016: verificado en 2
+  de 161 PDFs (2013 y 2024), ambos coinciden con el patrón documentado
+  -- NO es una re-verificación completa de los 161, solo un spot-check.
+
+**Dos discrepancias nuevas encontradas, corregidas con el mismo patrón
+que el Nodo 1 (anotación en línea + explicación, sin borrar el
+historial):**
+
+1. **"146/161 (91%) PDFs con al menos una tabla" no se reproduce.**
+   Re-escaneados los 161 PDFs con el mismo patrón (`Table N:`), en
+   texto plano y en modo "blocks" (mismo resultado en los dos):
+   **138/161 (86%)**. Probada una variante más laxa (sin exigir los
+   dos puntos): 155/161 (96%) -- ninguna de las dos reproduce 146, que
+   cae entre ambas sin que se haya podido identificar la variante de
+   método que la produjo (el script original de esa sesión no quedó
+   guardado). **Corregido en CLAUDE.md: la cifra original (146/161)
+   queda anotada como NO VERIFICADA, no borrada -- la cifra vigente
+   para cualquier razonamiento posterior es 138/161 (86%)**,
+   re-confirmada en esta sesión. La conclusión que sostenía (las
+   tablas son la norma, no el caso raro) sigue siendo válida con
+   cualquiera de las tres cifras -- no cambia la decisión ya tomada
+   (Opción A de tratamiento de tablas), solo el número citado.
+
+2. **La prueba real del Nodo 4 contra la API es cierta pero está
+   desactualizada -- no cubre el prompt tal como es hoy.** La llamada
+   real de sesión 2 (16-ago-2026) se hizo contra una versión de
+   `_format_structured_result` ANTERIOR a `discussion_text`/
+   `discussion_is_boilerplate` (añadidos en sesión 3, mismo día) y
+   anterior al texto de "motivos opuestos" para ADI sin valor (tier
+   1/2, añadido en sesión 17-ago-2026 continuación 7) -- ambos
+   confirmados presentes en el código actual, ninguno existía en el
+   momento de esa prueba. `_format_retrieved_chunks` (aviso de tier 3)
+   tampoco existía todavía. **Ninguna de las tres adiciones ha pasado
+   nunca por una llamada real.** Más grave: como el Nodo 2 no existía
+   hasta hoy, **todas las pruebas reales de este nodo se hicieron con
+   `retrieved_chunks=[]`** -- el caso que de verdad importa (contexto
+   narrativo real poblando el prompt) nunca se ha probado end-to-end
+   contra la API real. Verificado además con `grep`: **no existe
+   ningún test automatizado de `generate_answer_node`** -- a
+   diferencia de los Nodos 1 y 2, esta verificación nunca se codificó
+   como reproducible. **Corregido en CLAUDE.md** (bullet de Nodo 4 en
+   "Estado del código" + nuevo pendiente #9): no tratar "Nodo 4
+   probado contra la API real" como garantía vigente del comportamiento
+   actual sin repetir la prueba con el prompt de hoy.
+
+**Nada de lo encontrado en esta auditoría revierte trabajo ya hecho ni
+invalida ninguna decisión de arquitectura tomada** -- son dos casos de
+cifras/afirmaciones que necesitaban una nota de vigencia más precisa,
+no errores que cambien una conclusión. Distinto del caso del Nodo 1
+(que sí era una afirmación completamente falsa de un nodo que nunca
+existió).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Nada nuevo generado por esta auditoría en sí -- las dos correcciones
+  quedan como pendientes #9 (Nodo 4) y una nota en la Evidencia 1 del
+  tratamiento de tablas (ya corregidas en CLAUDE.md, no acciones de
+  código pendientes).
+- Todo lo demás igual que la entrada anterior -- `graph/build.py`
+  sigue siendo el siguiente paso.
+
+## 2026-08-18 (continuación 9) — graph/build.py: grafo ensamblado y compilado, NO ejecutado todavía
+
+**Contexto:** con los 4 nodos implementados, se pidió ensamblar
+`graph/build.py` con `StateGraph` de LangGraph -- orden
+extract_entity -> hybrid_retrieval -> verify_currency -> generate_answer,
+decidiendo y documentando explícitamente qué pasa si el Nodo 1 no
+resuelve `substance_uuid`, compilarlo y exponer `answer_question(query)`.
+Explícitamente: sin llamar a la API todavía, solo mostrar
+`get_graph().draw_mermaid()` para revisar la estructura antes de
+ejecutar nada real.
+
+**Decisión de diseño (la pedida explícitamente) -- qué pasa sin
+`substance_uuid`:** el grafo sigue hasta el Nodo 4, no corta antes,
+pero salta el Nodo 3 (que lanzaría `ValueError` sin `substance_uuid`,
+sin tocar su código). Una única arista condicional después del Nodo 2
+decide el camino. Razón: el Nodo 4 ya estaba diseñado en sesiones
+anteriores para degradar con gracia con `structured_result=None` y
+`retrieved_chunks=[]` -- seguir hasta ahí da una respuesta útil sin
+código nuevo; cortar antes no ahorra nada (la única llamada cara, el
+Nodo 1, ya se pagó) y deja al usuario sin respuesta.
+
+**Implementado en `graph/build.py` (nuevo):**
+- `build_graph(deps)`: los 4 nodos como closures que capturan `deps`
+  (las funciones de nodo toman `(state, deps)`, `add_node` espera solo
+  `state`) + la arista condicional descrita arriba.
+- `build_default_deps()`: `NodeDependencies` real -- store del xlsx,
+  colección Chroma persistente, `SentenceTransformer` (mismo modelo
+  del indexado), y `build_default_client()` reutilizado de
+  `graph/llm_client.py` (no duplicado).
+- `answer_question(query: str) -> str`: punto de entrada pedido.
+  `deps`/grafo cacheados a nivel de módulo (no pedido literalmente así,
+  decisión propia para no recargar el modelo de embeddings ni reabrir
+  Chroma en cada pregunta -- documentado en el código).
+- Bloque `if __name__ == "__main__"`: compila con un
+  `NodeDependencies` de relleno (todos los campos `None`) y dibuja el
+  Mermaid -- seguro porque `deps` no se toca durante `compile()`/
+  `get_graph()`, solo dentro de las funciones de nodo cuando el grafo
+  se invoca de verdad.
+
+**Verificado, sin tocar la API en ningún momento:**
+- `python -m efsa_rag.graph.build` compila y dibuja el grafo. Salida
+  Mermaid real:
+  ```
+  __start__ --> extract_entity;
+  extract_entity --> hybrid_retrieval;
+  hybrid_retrieval -.-> generate_answer;
+  hybrid_retrieval -.-> verify_currency;
+  verify_currency --> generate_answer;
+  generate_answer --> __end__;
+  ```
+  Coincide exactamente con el diseño -- las dos aristas punteadas desde
+  `hybrid_retrieval` son la arista condicional (camino normal vía
+  `verify_currency`, camino corto directo a `generate_answer`).
+- Suite de tests completa: **23/23 siguen pasando** con el módulo
+  nuevo importado (~99 s).
+
+**CLAUDE.md actualizado** con el diseño completo y la distinción
+explícita entre "compilado y verificado estructuralmente" (esta
+sesión) y "ejecutado con datos reales" (todavía no, a propósito).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- **El grafo nunca se ha invocado de verdad** -- ni `answer_question(...)`
+  ni `graph.invoke(...)` se han llamado con una pregunta real en esta
+  sesión, tal como se pidió explícitamente. Es el siguiente paso lógico
+  natural: una pregunta real de extremo a extremo (Nodo 1 -> 2 -> 3 ->
+  4 en una sola ejecución), algo que hasta ahora solo se había probado
+  nodo por nodo por separado.
+- Todo lo demás sin cambios respecto a la entrada anterior (pendiente
+  #9 de CLAUDE.md sobre re-probar el Nodo 4 con el prompt actual sigue
+  abierto, independiente de este ensamblado).
+
+## 2026-08-18 (continuación 10) — vigencia_ambigua marcado como reservado; diagnóstico de prevalencia de ambigüedad en el Nodo 3, diferido con evidencia
+
+**Contexto:** antes de la primera ejecución real del grafo, se
+preguntó qué pasa hoy si `verify_currency_node` encuentra un caso
+ambiguo (varias `'EFSA opinion'` con fechas próximas). Respuesta dada
+en el turno anterior: ni excepción ni manejo real, `MAX(fecha)` en
+silencio, `vigencia_ambigua` no cubre ese caso pese al nombre y nadie
+la lee. En paralelo se pidió arreglar esa señal engañosa, y por
+separado, escanear el corpus real (primero tier 1, luego tier 2/3)
+para decidir con datos si implementar la detección ahora o diferirla.
+
+**Arreglado, sin cambiar comportamiento:** `GraphState.vigencia_ambigua`
+y `verify_currency_node` -- comentarios y docstring reescritos para
+decir explícitamente "RESERVADO, SIN EFECTO TODAVÍA", con las dos
+razones (nadie lo lee; ni siquiera mide ambigüedad real, solo "cero
+candidatos"). No se borró el campo -- sigue siendo el punto de
+extensión reservado para cuando se implemente la detección real.
+Verificado que el módulo sigue importando sin errores (solo
+comentarios/docstrings, cero lógica tocada).
+
+**Diagnóstico de prevalencia -- metodología:** replicado el filtrado
+EXACTO de candidatos de `current_reference_value_opinion` (mismos
+pasos: `VALID_OPINION_TYPES`, rescate de dominio, exclusión de pienso
+animal) sin el pick final de `MAX(fecha)`, midiendo la distancia en
+días entre el candidato ganador y el más cercano de los demás, para
+cada sustancia con 2+ candidatos supervivientes. Verificado contra el
+caso conocido de aspartamo antes de confiar en el método: reproduce
+exactos los 4 candidatos esperados (2006, 2009×2, 2013, excluyendo el
+statement de 2011). Umbral: 90 días (y 30 días para comparar) --
+razonado en CLAUDE.md, pendiente #6.
+
+**Tier 1 (94 sustancias con ADI resuelto, turno anterior):** 0
+ambiguas a 90 ni a 30 días. Gap real más pequeño: 106 días
+(Propane-1,2-diol).
+
+**Tier 2/3 (153 sustancias adicionales, sin ADI numérico -- `require_adi=False`
+menos las 94 de tier 1, más Shellac vía tier 3), esta sesión:** 125 con
+un único candidato/fecha, 3 sin ningún candidato (caso ya manejado,
+`current_reference_value_opinion` devuelve `None` y Node 4 ya lo
+comunica -- no es ambigüedad), 25 con 2+ candidatos. **0 de esas 25
+caen dentro de 90 días (ni de 30).** Gap más pequeño: 160 días
+(Beetroot Red/betanin).
+
+**Total combinado: 0/247 sustancias ambiguas, a 90 o a 30 días, en
+todo el corpus con enlace estructural resoluble.** El gap real más
+pequeño de todo el corpus es 106 días -- sin ningún caso cerca del
+umbral que hiciera dudar de 90 días frente a 60 o 120.
+
+**Documentado en CLAUDE.md como pendiente #6, DIFERIDO explícitamente
+(no implementado, con la evidencia completa, el caveat de que es una
+foto del corpus actual, y el razonamiento de por qué se difiere):**
+impacto verificado = cero incidentes reales hasta hoy, frente a
+trabajo con impacto YA conocido y pendiente (Nodo 4 sin re-probar con
+el prompt actual -- pendiente #9; servidor MCP; deploy). El programa de
+reevaluación sigue activo -- un futuro follow-up cercano en el tiempo a
+un dictamen existente SÍ podría producir el caso ambiguo que hoy no
+existe; este diagnóstico no lo descarta para siempre, solo confirma
+que no ha pasado todavía. Si el corpus cambia, re-ejecutar el mismo
+diagnóstico (no quedó guardado como script permanente -- investigación
+puntual, replicable con el método descrito) antes de asumir que sigue
+siendo seguro diferirlo.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Detección de ambigüedad real en el Nodo 3: sigue sin implementar, a
+  propósito (diferido con evidencia, no por omisión).
+- El grafo sigue sin invocarse con una pregunta real -- sigue siendo
+  el siguiente paso lógico natural, ahora con este hueco conocido y
+  aceptado explícitamente en vez de desconocido.
+- Todo lo demás sin cambios respecto a la entrada anterior.
+
+## 2026-08-18 (continuación 11) — Primera invocación real del grafo completo, auditoría de fundamentación (Soffritti), AnswerResult
+
+**Contexto:** primera ejecución real de `answer_question(...)` de
+extremo a extremo (Nodo 1 -> 2 -> 3 -> 4 en una sola llamada, con
+Chroma real de por medio, no vacío) -- hasta ahora cada nodo solo se
+había probado por separado. Pregunta: *"What is the ADI of aspartame
+and what study is it based on?"*.
+
+**Respuesta completa obtenida (pegada tal cual, sin resumir):**
+
+> **Dictamen de referencia:**
+> *Scientific Opinion on the re-evaluation of aspartame (E 951) as a food additive* – EFSA, 28 November 2013. DOI: 10.2903/j.efsa.2013.3496.
+>
+> **ADI de aspartame:** 40 mg/kg de peso corporal al día.
+>
+> **Estudio en el que se basa:** el contexto estructurado no especifica
+> el estudio pivotal concreto. Los fragmentos narrativos mencionan
+> estudios relevantes (estudios a corto plazo en adultos y adultos
+> obesos, y el estudio de Soffritti et al. 2006), pero no identifican
+> explícitamente cuál es el estudio pivotal del NOAEL.
+>
+> Cita textual de `JustificationAndComments`, aclaración del margen de
+> seguridad (×100 sobre NOAEL, sin la frase prohibida de "si se supera
+> el ADI"), y nota explícita de que los fragmentos no permiten
+> identificar el estudio pivotal concreto.
+
+**Verificación de fundamentación pedida antes de dar la respuesta por
+buena:** ¿"Soffritti et al. 2006" aparece literalmente en algún
+`retrieved_chunk`, o es conocimiento propio del modelo sin decirlo?
+Reconstruida la llamada a `hybrid_retrieval_node` con el mismo
+`substance_uuid`/query (en ese momento `answer_question` solo devolvía
+el string, no había forma de inspeccionar los chunks directamente) --
+**confirmado, aparece literalmente en el chunk 1** (página 32, sección
+"2.7.1. Existing authorisations and evaluations of aspartame"):
+
+```
+of this study and the use of animals with a high infection rate, the COC considered that no valid
+conclusions could be drawn from this study. Therefore, the COC agreed that the Soffritti et al. (2006)
+study did not indicate a need for a review of the ADI for aspartame (COC, 2006).
+```
+
+También verificado el otro detalle citado ("adultos obesos") --
+trazable al chunk 4 (página 92, "3.2.7.3. Repeat dose studies in
+humans"). **Ambas menciones concretas de la respuesta están
+fundamentadas en el contexto recuperado, no en conocimiento de
+entrenamiento sin marcar** -- no hizo falta reforzar
+`NODE_4_GROUNDING_RULES` con esta evidencia.
+
+**Implementado tras esto -- `answer_question` cambia de contrato
+(`-> str` a `-> AnswerResult`)**, para que auditar fundamentación no
+requiera reconstruir el retrieval a mano la próxima vez:
+- `AnswerResult` (dataclass, nuevo en `graph/build.py`): `answer: str`,
+  `retrieved_chunks: list[RetrievedChunk]`,
+  `structured_result: OpinionReference | None` -- los mismos objetos
+  que vio el Nodo 4, leídos del estado final tras `.invoke(...)`, no
+  una reconstrucción aparte. `answer` sigue siendo el texto final, esto
+  lo acompaña, no lo sustituye.
+- **Verificado con `grep` antes del cambio: no había ningún caller real
+  que rompiera** (`ui/app.py`, tests, scripts -- ninguno usaba
+  `answer_question` todavía, solo invocaciones manuales sueltas de
+  sesiones de verificación).
+- Re-verificado con una llamada real tras el cambio: `result.answer`,
+  `result.structured_result` (ADI=40.0, fecha 2013-11-28,
+  `discussion_is_boilerplate=True`) y `result.retrieved_chunks` (5
+  chunks, mismo contenido y mismo orden que la reconstrucción manual
+  anterior -- confirma que el retrieval es determinista para esta
+  consulta) -- todo correcto.
+- Suite de tests completa: **23/23 siguen pasando** (~94 s).
+
+**CLAUDE.md actualizado:** contrato de `answer_question` corregido en
+"Estado del código"; pendiente #9 (re-probar el Nodo 4 con el prompt
+actual) marcado **PARCIALMENTE HECHO** -- esta consulta ejercitó
+`retrieved_chunks` no vacío y `discussion_text`, pero NO el mensaje de
+"motivos opuestos" para ADI tier 2 (aspartamo tiene ADI, no ejercita
+esa rama) ni el aviso de tier 3 en `retrieved_chunks` (los 5 chunks de
+aspartamo son tier 1) -- sigue sin existir un test automatizado de
+`generate_answer_node`/`answer_question`.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Pendiente #9 solo parcialmente cerrado -- falta probar con una
+  sustancia tier 2 (ej. TiO2) y una tier 3 (Shellac/sucralosa) para
+  ejercitar las ramas de mensaje que aspartamo no toca.
+- Sigue sin existir ningún test automatizado de `generate_answer_node`/
+  `answer_question` -- toda la verificación de este nodo, en las 2
+  sesiones donde se ha hecho, ha sido manual.
+- Detección de ambigüedad en el Nodo 3: sigue diferida (sin cambios).
+- Servidor MCP, deploy: sin cambios esta sesión.
+
+## 2026-08-18 (continuación 12) — Bug real de truncamiento silencioso en el Nodo 4, arreglado; diagnóstico de fraseo de query en el Nodo 2
+
+**Contexto:** dos consultas reales más pedidas para ejercitar tier 2
+(TiO2) y tier 3 (Shellac) del Nodo 4. La respuesta de Shellac llegó
+pegada tal cual, sin resumir -- y se notó a simple vista que terminaba
+a mitad de frase, sin punto final. Antes de dar la validación del Nodo
+4 por cerrada, se pidió confirmar la causa exacta (`finish_reason`) y,
+si era truncamiento real, arreglarlo con dos cambios (subir
+`max_tokens`, y sobre todo un chequeo explícito que nunca deje pasar
+una respuesta cortada sin avisar). En paralelo, sin bloquear el fix:
+diagnosticar por qué el retrieval de TiO2 no trajo contenido de
+genotoxicidad pese a ser la conclusión central del dictamen de 2021.
+
+**Dos consultas reales ejecutadas primero (TiO2, Shellac) -- resultado
+completo pegado sin resumir en el turno correspondiente.** Confirmaron
+los tiers esperados: TiO2 -> 5 chunks, todos tier 2 (`adi_value=None`,
+`discussion_is_boilerplate=False`, discusión real presente); Shellac ->
+5 chunks, todos tier 3, con el aviso de fiabilidad de tier 3
+correctamente activado en el texto de respuesta ("identificados por
+coincidencia de nombre... fiabilidad menor"). La respuesta de Shellac
+cortada a mitad de frase, sin ningún aviso, fue lo que disparó el resto
+de esta sesión.
+
+**Confirmación de causa, ANTES de tocar nada (pedido explícitamente en
+ese orden):** `LLMResponse` no exponía `finish_reason` -- campo nuevo
+añadido a `graph/llm_client.py` (poblado desde
+`response.choices[0].finish_reason` en `DeepSeekClient`, desde
+`data.get("done_reason")` en `OllamaClient`, `None` si el backend no lo
+expone). Reconstruido el mismo prompt de Shellac exacto y llamado a la
+API con el `max_tokens=800` de entonces (sin cambiar nada más
+todavía): **`finish_reason == 'length'`, `output_tokens == 800`
+(el tope exacto) -- truncamiento real por límite de longitud, no otra
+causa** (no filtro de contenido, no secuencia de parada).
+
+**Fix implementado, dos partes, en `graph/nodes.py`:**
+1. `NODE_4_MAX_TOKENS` subido de 800 a 2000 -- con "thinking" ya
+   desactivado (decisión de sesiones anteriores, sin tocar), esto es
+   presupuesto de texto de salida real, coste directo, no oculto.
+2. `generate_answer_node` comprueba `response.finish_reason == "length"`
+   explícitamente: si trunca con el tope normal, reintenta UNA vez con
+   `NODE_4_RETRY_MAX_TOKENS = 3500`; si sigue truncada incluso así,
+   añade `"\n\n[respuesta incompleta por límite de longitud]"` al
+   final. Nunca se devuelve una respuesta cortada sin avisar.
+
+**Verificado tras el fix, misma consulta de Shellac exacta:** con
+`max_tokens=2000` la respuesta terminó sola (`finish_reason == 'stop'`)
+en **845 tokens de salida** -- ni siquiera hizo falta el reintento --
+y ahora cierra con un párrafo de "Conclusión" completo. Pegada la
+respuesta completa en el turno correspondiente, sin resumir. Suite de
+tests completa: **23/23 siguen pasando** (~96 s).
+
+**Coste/consulta -- NO recalculado con precisión, honestidad explícita
+sobre por qué:** la cifra vigente ($0,0005-0,0014/consulta) sigue
+basada en ~365 tokens de salida (de la sesión del fix de "thinking",
+16-ago-2026) -- el dato real medido ahora (845 tokens de salida para
+una respuesta completa con desglose largo) es más del doble. No se
+recalculó un $ preciso porque no hay una tarifa $/token de DeepSeek
+verificada en esta sesión -- esa cifra la había aportado el usuario
+contra una fuente de pricing externa en una sesión anterior, no algo
+que este proyecto tenga memorizado. Documentado en CLAUDE.md como
+pendiente explícito: recalcular con la tarifa real antes de dar el
+presupuesto de 6-7€/mes por bueno con el tope de 2000 (y el peor caso
+de 3500 si el reintento llega a dispararse).
+
+**Diagnóstico de retrieval de TiO2 (solo investigación, nada
+implementado, tal como se pidió):** comparadas dos consultas contra el
+mismo `substance_uuid` de TiO2 -- "Why was titanium dioxide withdrawn
+as a food additive?" (la original, sin contenido de genotoxicidad) vs.
+"titanium dioxide genotoxicity concern conclusion" (reformulación
+directa). **La reformulación trae como resultado #1 exactamente la
+sección "4.3. Genotoxicity" (página 45)** -- confirma que el contenido
+SÍ está bien chunked e indexado, es un problema de fraseo de la
+pregunta original, no del índice: "withdrawn" no es un marco que el
+propio dictamen use (es una reevaluación, no un anuncio de retirada),
+así que la similitud de embeddings favoreció contenido superficial
+(Introduction/Background/Summary) sobre la sección sustantiva.
+**Hallazgo secundario no buscado:** incluso con la reformulación
+mejor, 3 de los 5 resultados fueron fragmentos de "References"
+(bibliografía que menciona "genotoxicity" en el título citado, no
+razonamiento real) -- mismo tipo de ruido de baja calidad que ya
+motivó excluir tablas del índice narrativo. Ninguno de los dos
+hallazgos se implementó -- quedan como candidatos a mejora futura del
+Nodo 2/chunker (reformulación de query, exclusión de "References"),
+documentados en CLAUDE.md.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- Coste/consulta con el nuevo `max_tokens=2000` sin recalcular con
+  precisión -- falta la tarifa $/token real.
+- Posible mejora de retrieval (reformulación de query en Nodo 1/2,
+  exclusión de "References" del chunking) diagnosticada pero no
+  implementada -- decisión de priorización pendiente.
+- Sigue sin existir test automatizado de `generate_answer_node` --
+  ahora sería el momento de codificar el caso de truncamiento como
+  test de regresión (mock de `LLMClient` que devuelva
+  `finish_reason="length"` la primera vez, para no depender de una
+  llamada real que trunque por casualidad).
+- Detección de ambigüedad en el Nodo 3: sigue diferida (sin cambios).
+- Servidor MCP, deploy: sin cambios esta sesión.

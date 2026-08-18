@@ -26,6 +26,15 @@ class LLMResponse:
     input_tokens: int
     output_tokens: int
     model: str
+    # 'stop' (completado con normalidad), 'length' (cortado por
+    # max_tokens -- el texto puede estar incompleto a mitad de frase),
+    # u otros valores del proveedor ('content_filter', etc.). `None` si
+    # el backend no lo expone (ver OllamaClient). Añadido en sesión
+    # 18-ago-2026 tras detectar una respuesta real truncada a mitad de
+    # frase (Shellac, tier 3) que se estaba devolviendo al usuario sin
+    # ningún aviso -- ver generate_answer_node, que ahora comprueba
+    # este campo explícitamente antes de dar una respuesta por buena.
+    finish_reason: str | None = None
 
 
 class LLMClient(ABC):
@@ -102,6 +111,7 @@ class DeepSeekClient(LLMClient):
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             model=self.model,
+            finish_reason=choice.finish_reason,
         )
 
 
@@ -149,11 +159,14 @@ class OllamaClient(LLMClient):
         text = data.get("message", {}).get("content", "")
         # Ollama no siempre devuelve conteo de tokens homogéneo entre
         # versiones; se deja en 0 si no está disponible en vez de fallar.
+        # `done_reason` ("stop"/"length"/...) existe en versiones
+        # recientes de la API -- `None` si no está presente, no asumido.
         return LLMResponse(
             text=text,
             input_tokens=data.get("prompt_eval_count", 0),
             output_tokens=data.get("eval_count", 0),
             model=self.model,
+            finish_reason=data.get("done_reason"),
         )
 
 

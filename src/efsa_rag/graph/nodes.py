@@ -131,6 +131,19 @@ class GraphState(TypedDict, total=False):
     substance_uuid: str | None
     structured_result: OpinionReference | None
     retrieved_chunks: list[RetrievedChunk]
+    # RESERVADO, SIN EFECTO TODAVÍA -- no lo trates como protección real.
+    # (1) Ningún nodo ni graph/build.py lo lee -- verificado, cero
+    #     consumidores (sesión 18-ago-2026). Puesto por verify_currency_node
+    #     y ahí se queda.
+    # (2) Ni siquiera mide lo que su nombre sugiere: hoy es literalmente
+    #     `result is None` (ningún candidato 'EFSA opinion' encontrado),
+    #     NO "varios candidatos con fechas próximas sin que el título
+    #     aclare cuál sustituye a cuál" (la ambigüedad real que describe
+    #     current_reference_value_opinion en su propio docstring, pendiente
+    #     #6 de CLAUDE.md). Ese caso hoy se resuelve en silencio por
+    #     MAX(fecha) sin ninguna señal hacia el llamador.
+    # No lo borres sin revisar el pendiente #6 primero -- es el punto de
+    # extensión ya reservado para cuando se implemente la detección real.
     vigencia_ambigua: bool
     answer: str
     citation: str | None
@@ -139,7 +152,18 @@ class GraphState(TypedDict, total=False):
 @dataclass
 class NodeDependencies:
     store: OpenFoodToxStore
-    vectorstore: object | None = None  # Chroma, se conecta en graph/build.py
+    # Chroma collection ya poblada (ver ingestion/chroma_index.py,
+    # scripts/build_chroma_index.py --all) -- objeto con `.query(...)`,
+    # tipado como `object` a propósito para no acoplar graph/nodes.py a
+    # la API concreta de chromadb (mismo principio ya aplicado a
+    # llm_client con la interfaz LLMClient).
+    vectorstore: object | None = None
+    # SentenceTransformer (mismo modelo usado para indexar -- ver
+    # EMBEDDING_MODEL_NAME en scripts/build_chroma_index.py,
+    # "all-MiniLM-L6-v2") -- necesario para embeder la pregunta del
+    # usuario con el MISMO modelo que los chunks indexados, no uno
+    # distinto por coincidencia. Objeto con `.encode(list[str])`.
+    embedding_model: object | None = None
     llm_client: LLMClient | None = None  # ver graph/llm_client.py -- intercambiable
 
 
@@ -147,32 +171,160 @@ class NodeDependencies:
 # Nodo 1 -- extracción de entidad
 # --------------------------------------------------------------------- #
 
-def extract_entity_node(state: GraphState, deps: NodeDependencies) -> GraphState:
-    """Identifica qué aditivo/E-number pregunta el usuario.
+# PRIMERA VEZ que este prompt existe (sesión 18-ago-2026, continuación
+# 7) -- no es una continuación de nada previo, ver CLAUDE.md/PROGRESS.md
+# para la corrección de que este nodo llevaba siendo `NotImplementedError`
+# desde el primer commit del repo pese a documentación previa que decía
+# lo contrario.
+#
+# Salida en una sola línea, sin JSON/tool-calling -- LLMClient.complete()
+# no expone eso (ver graph/llm_client.py), y no hace falta más
+# estructura que un nombre. El nombre debe ser el CANÓNICO EN INGLÉS
+# porque `OpenFoodToxStore.substance_uuid_by_name` exige coincidencia
+# EXACTA contra `SUB.ChemicalName` -- limitación conocida, NO resuelta
+# aquí (ver CLAUDE.md, pendiente #2): si el LLM normaliza a un nombre
+# razonable pero que no coincide carácter a carácter con el de SUB
+# (ej. nombres compuestos como "Tartaric acid (L(+)-)"), la resolución
+# falla y `substance_uuid` queda en None -- comportamiento esperado,
+# no un bug de este nodo.
+NODE_1_ENTITY_EXTRACTION_PROMPT = """\
+Identificas de qué aditivo alimentario habla una pregunta de usuario, \
+para un sistema que después consulta una base de datos regulatoria \
+(OpenFoodTox, EFSA) por el nombre químico exacto de la sustancia.
 
-    TODO: llamada real al LLM con prompt corto (~200 tokens de entrada,
-    ver estimación de coste en docs/). Placeholder de contrato.
+Tu única salida debe ser el NOMBRE QUÍMICO CANÓNICO EN INGLÉS de la \
+sustancia, tal como aparecería en una base de datos regulatoria de \
+aditivos alimentarios (ej. "Aspartame", "Titanium dioxide", "Sodium \
+nitrite") -- SIN explicación, SIN puntuación adicional, SIN frases \
+introductorias como "The substance is" -- solo el nombre, en una sola \
+línea.
+
+Reglas:
+1. Si la pregunta menciona el nombre en español u otro idioma (ej. \
+   "aspartamo"), tradúcelo a su nombre canónico en inglés.
+2. Si la pregunta menciona un E-number (ej. "E 951", "E951"), \
+   identifica la sustancia correspondiente y responde con su nombre \
+   canónico en inglés, nunca con el E-number.
+3. Si la pregunta no menciona ningún aditivo alimentario identificable, \
+   responde exactamente: NONE
+4. No inventes un nombre si no estás razonablemente seguro -- en ese \
+   caso, responde NONE en vez de adivinar.
+"""
+
+
+def extract_entity_node(state: GraphState, deps: NodeDependencies) -> GraphState:
+    """Identifica qué aditivo pregunta el usuario -- llamada real al LLM
+    (`NODE_1_ENTITY_EXTRACTION_PROMPT`) para normalizar la pregunta a un
+    nombre químico canónico en inglés, más resolución determinista
+    contra OpenFoodTox (`OpenFoodToxStore.substance_uuid_by_name`, la
+    MISMA función ya probada en otros nodos -- coincidencia exacta, no
+    fuzzy, limitación conocida sin resolver aquí).
+
+    Si el LLM responde "NONE", o el nombre no resuelve a un UUID exacto
+    en `SUB`, `substance_uuid` queda en `None` -- el resto del grafo ya
+    maneja ese caso (Nodo 2: `retrieved_chunks` vacío sin llamar a
+    Chroma; Nodo 3: espera un `substance_uuid` no nulo y lanza
+    `ValueError` si se le llama sin él -- decidir SI llamarlo en ese
+    caso es responsabilidad de la orquestación del grafo, no de este
+    nodo).
     """
-    raise NotImplementedError
+    if deps.llm_client is None:
+        raise ValueError("Nodo 1 requiere un llm_client configurado en NodeDependencies")
+
+    user_query = state.get("user_query", "")
+    response = deps.llm_client.complete(
+        system_prompt=NODE_1_ENTITY_EXTRACTION_PROMPT,
+        user_message=user_query,
+        max_tokens=30,  # un nombre químico, no una frase -- ver el prompt
+    )
+
+    raw_name = response.text.strip().strip('"').strip("'").rstrip(".")
+    substance_name = raw_name if raw_name and raw_name.upper() != "NONE" else None
+
+    substance_uuid = deps.store.substance_uuid_by_name(substance_name) if substance_name else None
+
+    return {**state, "substance_name": substance_name, "substance_uuid": substance_uuid}
 
 
 # --------------------------------------------------------------------- #
 # Nodo 2 -- retrieval híbrido
 # --------------------------------------------------------------------- #
 
-def hybrid_retrieval_node(state: GraphState, deps: NodeDependencies) -> GraphState:
-    """Query estructurada contra OpenFoodTox + búsqueda vectorial contra
-    Chroma para el contexto narrativo del dictamen.
+DEFAULT_RETRIEVAL_K = 5
+# Extremo superior del rango k=3-5 asumido en el cálculo de presupuesto
+# de contexto del Nodo 4 (ver PROGRESS.md, sesión 18-ago-2026: ~150-180
+# tokens/chunk medidos sobre el corpus real, k=3-5 -> ~1.250-2.000
+# tokens de entrada, coste recalculado ~$0.0005-0.0014/consulta,
+# confirmado del mismo orden de magnitud que la estimación previa sin
+# retrieval -- ver CLAUDE.md, "Decisiones de arquitectura ya tomadas").
+# Se fija en 5 (no 3) porque el presupuesto seguía siendo razonable
+# incluso en el extremo superior, y más contexto real reduce el riesgo
+# de que el Nodo 4 tenga que degradar a solo metadatos por falta de
+# fragmentos relevantes.
 
-    TODO: conectar deps.vectorstore.similarity_search(...). El resultado
-    DEBE poblar `state["retrieved_chunks"]` como `list[RetrievedChunk]`
-    (contrato fijado en sesión 17-ago-2026, continuación 7 -- ver
-    CLAUDE.md, "Decisiones de arquitectura ya tomadas"), NUNCA como
-    `list[str]` -- copiar `substance_resolution_tier` y el resto de
-    campos directamente de los metadatos de cada chunk en Chroma (mismo
-    esquema diseñado en CLAUDE.md, "Hallazgos verificados").
+
+def hybrid_retrieval_node(state: GraphState, deps: NodeDependencies) -> GraphState:
+    """Búsqueda semántica en Chroma, filtrada por `substance_uuid`, con
+    la pregunta del usuario como query.
+
+    Solo usa `substance_uuid` (ya resuelto por el Nodo 1) como filtro --
+    es el único campo por el que el esquema de metadatos de Chroma
+    permite un filtro exacto y fiable (ver CLAUDE.md, "Hallazgos
+    verificados", ESQUEMA FINAL: no hay `e_number` en los metadatos, y
+    `substance_name` es texto libre del usuario, no una clave de
+    filtrado). Si el Nodo 1 no resolvió un UUID (`state["substance_uuid"]`
+    es `None` -- puede que sí haya `substance_name`, ej. el nombre tal
+    como lo escribió el usuario, pero sin UUID no hay filtro fiable
+    posible), NO se llama a Chroma en absoluto -- una búsqueda sin
+    filtro de sustancia devolvería fragmentos de CUALQUIER dictamen del
+    corpus, mezclando contexto no relacionado con la pregunta. Se deja
+    `retrieved_chunks` vacío y el Nodo 4 ya degrada con gracia a ese
+    caso (`_format_retrieved_chunks`).
+
+    `substance_resolution_tier` (y el resto de campos de
+    `RetrievedChunk`) se copian TAL CUAL de los metadatos ya escritos
+    en el chunk al indexar (ver `ingestion/chroma_index.py`) -- no se
+    re-derivan aquí. La resolución de tier ocurrió una sola vez, al
+    construir el índice.
     """
-    raise NotImplementedError
+    substance_uuid = state.get("substance_uuid")
+    if not substance_uuid:
+        return {**state, "retrieved_chunks": []}
+
+    if deps.vectorstore is None or deps.embedding_model is None:
+        raise ValueError("Nodo 2 requiere vectorstore y embedding_model configurados en NodeDependencies")
+
+    query_text = state.get("user_query", "")
+    query_embedding = deps.embedding_model.encode([query_text])[0]
+    query_embedding_list = (
+        query_embedding.tolist() if hasattr(query_embedding, "tolist") else list(query_embedding)
+    )
+
+    result = deps.vectorstore.query(
+        query_embeddings=[query_embedding_list],
+        where={"substance_uuid": substance_uuid},
+        n_results=DEFAULT_RETRIEVAL_K,
+    )
+
+    documents = result.get("documents") or [[]]
+    metadatas = result.get("metadatas") or [[]]
+
+    retrieved_chunks = [
+        RetrievedChunk(
+            text=text,
+            substance_uuid=meta["substance_uuid"],
+            chemical_name=meta["chemical_name"],
+            dossier_uuid=meta["dossier_uuid"],
+            dossier_title=meta["dossier_title"],
+            substance_resolution_tier=meta["substance_resolution_tier"],
+            doi=meta.get("doi"),
+            section_heading=meta.get("section_heading"),
+            page_number=meta.get("page_number"),
+        )
+        for text, meta in zip(documents[0], metadatas[0])
+    ]
+
+    return {**state, "retrieved_chunks": retrieved_chunks}
 
 
 # --------------------------------------------------------------------- #
@@ -180,10 +332,19 @@ def hybrid_retrieval_node(state: GraphState, deps: NodeDependencies) -> GraphSta
 # --------------------------------------------------------------------- #
 
 def verify_currency_node(state: GraphState, deps: NodeDependencies) -> GraphState:
-    """Determinista primero (ver ingestion/openfoodtox.py::
-    current_reference_value_opinion, verificado con aspartamo). Solo cae
-    a LLM sobre el texto del PDF si hay ambigüedad real (varias 'EFSA
-    opinion' del mismo tipo, fechas muy próximas, título no concluyente).
+    """Determinista (ver ingestion/openfoodtox.py::
+    current_reference_value_opinion, verificado con aspartamo) --
+    MAX(fecha) entre los candidatos 'EFSA opinion' que pasan los
+    filtros de dominio/regulación, sin ningún chequeo de ambigüedad.
+
+    NO hay todavía ningún fallback a LLM ni detección real de
+    ambigüedad (varias 'EFSA opinion' con fechas muy próximas, título
+    no concluyente) -- pendiente #6 de CLAUDE.md, diagnóstico de
+    prevalencia en curso (sesión 18-ago-2026), sin implementar. Si
+    `current_reference_value_opinion` encuentra 2+ candidatos así, hoy
+    devuelve el de fecha más reciente en silencio, sin ninguna señal
+    hacia el llamador -- ver `vigencia_ambigua` más abajo, que NO cubre
+    este caso pese al nombre.
     """
     substance_uuid = state.get("substance_uuid")
     if not substance_uuid:
@@ -192,9 +353,11 @@ def verify_currency_node(state: GraphState, deps: NodeDependencies) -> GraphStat
     result = deps.store.current_reference_value_opinion(substance_uuid)
     new_state: GraphState = {**state, "structured_result": result}
 
-    # Marcador de ambigüedad: placeholder -- la lógica real de detección de
-    # ambigüedad (candidatos con fechas dentro de una ventana estrecha, o
-    # título no concluyente) se implementa aquí, no en el prompt del LLM.
+    # RESERVADO, SIN EFECTO -- ver el comentario largo junto al campo en
+    # GraphState. Esto es "no se encontró ningún candidato", NO "había
+    # varios candidatos y no estaba claro cuál elegir" -- son casos
+    # distintos, y este campo solo cubre el primero. Nadie lo lee aguas
+    # abajo todavía.
     new_state["vigencia_ambigua"] = result is None
 
     return new_state
@@ -331,6 +494,20 @@ siguiendo las reglas de fundamentación y de comunicación de riesgo del \
 system prompt."""
 
 
+NODE_4_MAX_TOKENS = 2000
+# Subido de 800 a 2000 (sesión 18-ago-2026) -- verificado con una
+# respuesta real truncada (Shellac, tier 3): finish_reason == 'length',
+# output_tokens == 800 exacto (el tope), cortada a mitad de frase. Ya no
+# hay overhead de reasoning_content ("thinking" desactivado, ver
+# DeepSeekClient) -- este es texto de salida real, así que subir el tope
+# es coste directo, no oculto: ver CLAUDE.md, "Decisiones de arquitectura
+# ya tomadas", para el recálculo de coste/consulta con este valor.
+NODE_4_RETRY_MAX_TOKENS = 3500
+# Presupuesto del reintento -- más margen que el default porque solo se
+# gasta en el caso raro (la primera pasada ya se truncó), no en cada
+# consulta.
+
+
 def generate_answer_node(state: GraphState, deps: NodeDependencies) -> GraphState:
     """Redacta la respuesta citando el número exacto de EFSA Journal / DOI.
 
@@ -341,6 +518,14 @@ def generate_answer_node(state: GraphState, deps: NodeDependencies) -> GraphStat
     puede venir vacío mientras no exista vector store -- el prompt está
     diseñado para degradar con gracia a solo metadatos en ese caso, no
     para fallar ni para que el LLM rellene el hueco inventando contenido).
+
+    Comprobación de truncamiento (sesión 18-ago-2026, ver CLAUDE.md):
+    si `finish_reason == 'length'`, la respuesta NUNCA se devuelve tal
+    cual -- se reintenta UNA vez con más presupuesto
+    (`NODE_4_RETRY_MAX_TOKENS`), y si sigue truncada incluso así, se le
+    añade una nota visible al final en vez de dejarla cortada a mitad de
+    frase sin ningún aviso (que es exactamente lo que pasaba antes de
+    esta sesión, descubierto con una respuesta real sobre Shellac).
     """
     if deps.llm_client is None:
         raise ValueError("Nodo 4 requiere un llm_client configurado en NodeDependencies")
@@ -349,9 +534,21 @@ def generate_answer_node(state: GraphState, deps: NodeDependencies) -> GraphStat
     response = deps.llm_client.complete(
         system_prompt=NODE_4_SYSTEM_PROMPT,
         user_message=user_prompt,
+        max_tokens=NODE_4_MAX_TOKENS,
     )
+
+    if response.finish_reason == "length":
+        response = deps.llm_client.complete(
+            system_prompt=NODE_4_SYSTEM_PROMPT,
+            user_message=user_prompt,
+            max_tokens=NODE_4_RETRY_MAX_TOKENS,
+        )
+
+    answer_text = response.text
+    if response.finish_reason == "length":
+        answer_text += "\n\n[respuesta incompleta por límite de longitud]"
 
     structured = state.get("structured_result")
     citation = (structured.doi or structured.title) if structured else None
 
-    return {**state, "answer": response.text, "citation": citation}
+    return {**state, "answer": answer_text, "citation": citation}
