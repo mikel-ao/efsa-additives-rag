@@ -4280,8 +4280,252 @@ anuncio de truncamiento). Suite completa: **42 passed, 2 skipped** (los
 - MCP (`mcp/server.py`) sigue con contrato de un único resultado --
   diseño de esquema multi-resultado dedicado queda para una sesión
   aparte, si se decide hacerlo.
+  **[CORRECCIÓN, sesión 2026-08-19 continuación 30: este punto quedó
+  CERRADO en esa misma sesión -- MCP SÍ se rediseñó a array de
+  resultados siempre, ver la entrada al final de este archivo. No se
+  reescribe esta línea para no borrar el rastro de que en el momento de
+  escribirse (continuación 29) era efectivamente pendiente y una
+  decisión deliberada de alcance, no un olvido.]**
 - El umbral `FUZZY_MATCH_LOW_THRESHOLD = 60` es una constante nombrada,
   fácil de re-tunear -- calibrado contra los casos reales disponibles
   hoy (tocoferol, caramelo, E150a), no contra una batería exhaustiva.
   Si aparecen más casos reales de typo/nombre genérico en producción,
-  revisar con esos datos antes de mover el número a ciegas.
+  revisar con esos datos antes de mover el número a ciegas. **Sigue
+  pendiente, sin cambios -- no cerrado en la sesión de rediseño MCP de
+  abajo.**
+
+## 2026-08-19 (continuación 30) — mensajes honestos para sustancia no resuelta (0 candidatos) y sustancia identificada sin dictamen (Olive leaf); rediseño de esquema MCP a array de resultados siempre
+
+Cierra dos huecos que la continuación 29 dejó documentados como
+pendientes: el texto que ve el usuario cuando el Nodo 1 no propone
+ningún candidato, el caso donde SÍ hay un candidato identificado pero
+sin dictamen vigente vinculado, y el contrato de un único resultado en
+el servidor MCP (marcado en la continuación 29 como "para una sesión
+aparte, si se decide hacerlo" -- se decidió hacerlo en esta).
+
+**1. Mensaje honesto de "sustancia no identificada" (`substance_candidates`
+vacío):**
+- Antes de implementar, se investigó `https://www.efsa.europa.eu/en/search?query={término}`
+  como posible enlace de búsqueda ya filtrado -- **descartado**: el
+  usuario lo verificó en un navegador real y confirmó que NO filtra de
+  verdad (mismo listado genérico de ~18.734 resultados tanto para
+  "aspartame" como para una cadena sin sentido; el filtrado real, si
+  existe, depende de JavaScript del lado del cliente que no se pudo
+  confirmar funcionando).
+- En su lugar: `EFSA_FOOD_ADDITIVES_URL` fijo a la página general de
+  aditivos de EFSA (`graph/nodes.py`), verificada con `curl` (HTTP 200)
+  y `WebFetch` (cita la misma cifra de 315 sustancias ya usada en el
+  README).
+- **Texto del mensaje deliberadamente SIN afirmar "esta sustancia no
+  tiene reevaluaciones recientes"** -- no es verificable por el sistema
+  y podría ser falso: el propio caso "plai caramel" (continuación 29)
+  demostró que la sustancia SÍ existía y SÍ tenía dictamen vigente
+  indexado, y el fallo fue de resolución de nombre, no de ausencia real
+  de reevaluación.
+- El término citado en el mensaje es `user_query` (la pregunta completa
+  tal como la escribió el usuario), NO `substance_name` (la propuesta
+  del Nodo 1) -- si este mensaje se dispara, `substance_name` por
+  definición no resolvió nada, así que mostrarlo arriesgaría presentar
+  un nombre no verificado como si fuera fiable.
+- Nueva función `_format_unresolved_substance_message` (`graph/nodes.py`),
+  usada SOLO cuando `substance_candidates` está vacío --
+  `_build_user_prompt` pasa de agrupar 0 y 1 candidato juntos a 3 ramas
+  explícitas (0 / 1 / 2+). El mensaje genérico ya existente de
+  `_format_retrieved_chunks` se mantuvo sin cambios para el caso
+  distinto de un candidato SÍ identificado sin chunks.
+- Verificado con llamada real (`answer_question("What is plai caramel
+  used for as a food additive?")`): la respuesta final incluye el
+  enlace fijo y cita la pregunta completa del usuario tal cual, sin
+  reformularla.
+
+**2. Bug real encontrado al verificar lo anterior -- caso Olive leaf dry
+extract, ya usado como test de regresión desde la sesión 17-ago-2026:**
+`"Olive leaf dry extract from O. europaea L."` resuelve por nombre
+EXACTO en `SUB` (1 candidato, tier `"exact"`), pero su única fila en
+`DOSSIER` es de pienso animal -- tras excluirla por dominio,
+`current_reference_value_opinion` da `None`. Probado el pipeline real
+completo (sin mock) ANTES de aplicar ningún fix, para confirmar el bug
+en vivo: el prompt resultante se contradecía a sí mismo -- "Sustancia
+identificada: Olive leaf dry extract..." aparecía justo encima de "no
+se ha podido resolver de forma exacta la sustancia mencionada en la
+pregunta".
+- **Distinción documentada entre dos tipos de bug de mensaje cazados
+  esta semana en el mismo archivo (`graph/nodes.py`):** (a)
+  *incondicionalmente falso* -- el mensaje "el corpus de PDFs todavía
+  no está indexado" (continuación 25), falso en CUALQUIER contexto de
+  la app; (b) *condicionalmente falso por reutilización sin contexto*
+  -- este bug: el mensaje era cierto para el contexto en que se
+  escribió (0 candidatos) pero se reutilizaba sin distinguirlo del
+  contexto "candidato identificado, sin dictamen", donde la misma
+  frase pasa a ser falsa. El fix real no fue solo cambiar el texto, fue
+  separar los dos contextos que antes compartían una función (ver
+  punto 1 de arriba).
+- Test de regresión con el caso exacto:
+  `tests/test_nodes.py::test_build_user_prompt_olive_leaf_extract_real_case_does_not_self_contradict`
+  (usa el `store` real, no un mock). Verificado también con generación
+  real del Nodo 4: la respuesta nombra la sustancia correctamente y
+  dice honestamente que no se encontró dictamen vigente, sin
+  contradicción con el nombre ya identificado.
+
+**3. Rediseño de esquema MCP -- `search_efsa_opinion` y
+`get_reevaluation_status` devuelven ahora SIEMPRE `{"candidates_found":
+N, "candidates_shown": M, "results": [...]}`, nunca un objeto plano con
+un único resultado elegido en silencio:**
+- Tres alternativas evaluadas antes de decidir: **(A, elegida)** array
+  siempre. **(B, descartada)** objeto único + campo `candidates`
+  opcional solo si hay ambigüedad. **(C, descartada)** las dos
+  herramientas intactas + una tercera herramienta de desambiguación.
+- Verificado antes de decidir, no como excusa a posteriori:
+  `server.list_tools()` real muestra que el `output_schema` de ambas
+  herramientas es `{"additionalProperties": true}`, sin ningún campo
+  declarado formalmente -- no había contrato de esquema MCP que romper
+  con ningún cambio de forma. Pero el motivo de fondo para preferir A
+  es otro: B y C dejan la honestidad ante la ambigüedad como OPCIONAL
+  para el consumidor (un cliente que no mire el campo `candidates`, o
+  que nunca llame a la tercera herramienta, vuelve a elegir un
+  candidato en silencio sin enterarse de que había otros). Con A, la
+  honestidad es estructural -- no hay forma de leer la respuesta sin
+  toparse con el array `results` y su longitud real.
+- Plumbing nuevo: `GraphState.candidates_total_found: int`
+  (`graph/nodes.py`, poblado en `extract_entity_node` -- el total ANTES
+  del recorte a `MAX_CANDIDATES_SHOWN`, distinto de
+  `candidates_truncated: bool`, que solo dice SI hubo recorte, no
+  CUÁNTOS había). `AnswerResult` gana `candidates_total_found: int = 0`
+  (aditivo). `ReevaluationStatus` gana los mismos 3 campos plurales que
+  `AnswerResult` ya tenía -- ahora es `get_reevaluation_status` quien
+  los consume directamente, no solo un caller hipotético futuro.
+- `results[i]` de `search_efsa_opinion`: `chemical_name`, `match_type`,
+  `match_score`, `dossier_title`, `doi`, `retrieved_chunks_count`
+  (contado por `substance_uuid`, no dividido a partes iguales). `answer`
+  se queda FUERA del array, a nivel superior -- sigue siendo un ÚNICO
+  texto narrativo (partirlo en N respuestas exigiría N llamadas al LLM,
+  coste innecesario). `results[i]` de `get_reevaluation_status`: los
+  mismos campos que antes tenía el objeto plano
+  (`dossier_found`/`dossier_title`/`doi`/`date_of_evaluation`/
+  `adi_value`/`adi_unit`/`adi_justification`/`discussion_available`)
+  más `chemical_name`/`match_type`/`match_score`. `safety_note` se
+  queda fuera del array en ambas.
+- **Verificado con llamada MCP real, no solo con tests -- tocoferol, no
+  solo aspartamo** (`get_reevaluation_status("tocopherol")`, vía
+  `asyncio.run(server.call_tool(...))`, sin mock): `candidates_found: 4,
+  candidates_shown: 4`, con las 4 variantes reales
+  (Delta/Gamma/DL-alpha/Tocopherol-rich extract) en `results`, mismo
+  orden determinista que el resto del sistema.
+  `search_efsa_opinion("aspartame")` confirma la regresión: sigue dando
+  `candidates_found: 1, candidates_shown: 1`, sin cambio de
+  comportamiento para el caso común.
+- `tests/test_mcp_server.py` **reescrito por completo** para la nueva
+  forma (los 6 tests existentes + 2 nuevos para el caso de 2+
+  candidatos, uno por herramienta) -- a diferencia de la continuación
+  29, aquí SÍ se tocó el archivo a propósito, porque ahora es la propia
+  forma del MCP la que cambió.
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- El umbral `FUZZY_MATCH_LOW_THRESHOLD = 60` sigue sin retocar --
+  calibrado contra los mismos casos reales de la continuación 29, no
+  una batería exhaustiva.
+- El caso "`structured_result` existe pero `retrieved_chunks` está
+  vacío" (la rama del mensaje de arriba distinta de Olive leaf) sigue
+  sin diagnosticarse a fondo con un caso real propio -- se implementó
+  el mensaje por coherencia, no porque se haya confirmado que ocurre
+  hoy en el corpus.
+- No verificado con un cliente MCP real (Claude Desktop u otro) --
+  mismo `asyncio.run(server.call_tool(...))` directo en Python que ya
+  se usaba en sesiones anteriores.
+
+## 2026-08-19 (continuación 31) — UI: 3 preguntas de ejemplo clicables + aclaración de una frase sobre ADI, junto al disclaimer
+
+**Contexto:** pedido explícito de añadir preguntas de ejemplo en
+español para orientar al usuario sobre cómo formular preguntas, más
+una aclaración breve de qué es el ADI -- ambas cerca del disclaimer en
+`ui/app.py`. Condición explícita: verificar cada pregunta con una
+llamada real antes de darlas por buenas, no asumir que el fraseo en
+español se comporta igual que el inglés ya probado en sesiones
+anteriores.
+
+**Verificación real, ANTES de tocar el código de la UI** (`rapidfuzz`
+no estaba instalado en este venv local pese a estar en
+`requirements.txt` desde la continuación 29 -- instalado aparte,
+`rapidfuzz-3.14.5`, sin tocar el archivo):
+- `"¿Cuál es el ADI del aspartamo y en qué estudio se basa?"` -- 1
+  candidato, `Aspartame` exacto, ADI=40 mg/kg bw/day, mismo dossier de
+  siempre (DOI `10.2903/j.efsa.2013.3496`). Respuesta correcta,
+  incluida la advertencia honesta de que el CONTEXTO no identifica el
+  estudio pivotal concreto -- no inventa uno.
+- `"¿Por qué el dióxido de titanio no tiene un ADI numérico?"` -- 1
+  candidato, `Titanium dioxide` exacto, sin ADI (caso conocido,
+  E171/2021). Respuesta cita la justificación histórica real del SCF
+  (1975/1977) recuperada de los chunks, y señala explícitamente que el
+  contexto no confirma si la evaluación de 2021 mantiene esa misma
+  razón -- sin inventar una causa científica no fundamentada.
+- `"¿Cuál es el ADI del tocoferol?"` -- **dispara la resolución
+  multi-candidato** (4 sustancias: Delta/Gamma/DL-alpha-tocopherol,
+  Tocopherol-rich extract, mismo comportamiento ya verificado en
+  inglés en la continuación 29) -- confirma que el fraseo en español
+  no cambia el comportamiento de fuzzy matching del Nodo 1 para este
+  caso. Las 4 se presentan por separado, ninguna con ADI numérico,
+  sin fusionarlas.
+
+Las tres confirmadas coherentes con el comportamiento ya documentado
+-- ninguna sorpresa de fraseo español vs. inglés en estos tres casos
+concretos (no una garantía general, solo de estos tres).
+
+**Implementación (`ui/app.py`):**
+- `render_disclaimer()` gana una línea `st.caption(...)` con la
+  aclaración de ADI, inmediatamente después del `st.warning(...)`
+  existente -- una sola frase, mismo tono conciso, sin tocar el texto
+  del disclaimer en sí.
+- `EXAMPLE_QUESTIONS` (constante a nivel de módulo) + nueva función
+  `render_example_questions()` -- un `st.button()` por pregunta, cada
+  uno con `key=f"ejemplo_{pregunta}"`. Al pulsarse, escribe la pregunta
+  en `st.session_state.query_input`.
+- `main()`: `render_example_questions()` se llama **antes** de
+  instanciar `st.text_input(..., key="query_input")` -- orden
+  deliberado, no cosmético: en el rerun que dispara el clic de un
+  botón, Streamlit ejecuta el script de arriba a abajo, así que el
+  valor nuevo de `session_state.query_input` ya está puesto cuando el
+  `text_input` se crea más abajo en la misma pasada. Sin esto (botones
+  después del campo), el patrón no funciona -- no se implementó a
+  ciegas, es el idiom estándar de Streamlit para este caso.
+- Nada de `check_and_register_query`/`render_update_section`/`LOCK_FILE`
+  tocado.
+
+**Verificado con `streamlit.testing.v1.AppTest`, dos pasadas:**
+1. Sin mocks: arranque limpio, sin excepciones; disclaimer + caption de
+   ADI + 3 botones + sección "Estado del corpus" presentes. Al pulsar
+   el primer botón, la app llegó a invocar `answer_question` de verdad
+   (confirmado por el timeout de 30s del test, no por un error) --
+   revela que un test de UI que pulsa un botón de ejemplo sin mockear
+   dispara una llamada real y facturada, no solo un cambio de estado
+   local.
+2. Con `unittest.mock.patch` sobre
+   `efsa_rag.graph.build.answer_question` y
+   `efsa_rag.deploy_assets.ensure_deploy_assets_downloaded` (mismo
+   patrón que `tests/test_mcp_server.py`, sin tocar la red ni gastar
+   tokens): botón pulsado -> `text_input` con key `query_input` queda
+   con el texto exacto de la pregunta -> `_render_answer` se invoca y
+   renderiza la respuesta (stub) + el `st.caption("Fuente: ...")` -- 
+   confirma el flujo completo botón -> campo -> generación sin
+   necesidad de red. Sección "Estado del corpus" y el resto de la UI
+   (candado de refresco) sin cambios ni excepciones en ninguna de las
+   dos pasadas.
+- `data/usage_log.json` (SÍ trackeado en git, no en `.gitignore`) quedó
+  modificado por las dos pasadas de verificación (contador de
+  consultas incrementado) -- restaurado a su valor commiteado con
+  `git checkout -- data/usage_log.json` tras la verificación, para no
+  dejar un diff espurio de estado de test.
+- Suite completa re-ejecutada tras los cambios: **48 passed, 2
+  skipped** (sin tests dedicados a `ui/app.py` en `tests/` -- mismo
+  patrón que sesiones anteriores, verificación vía `AppTest` puntual,
+  no comiteada como test).
+
+**Pendiente / sin resolver al cierre de esta entrada:**
+- No hay ningún test automatizado de `ui/app.py` en `tests/` -- toda la
+  verificación de esta sesión (y de las anteriores que tocaron este
+  archivo) fue manual con `AppTest`, no reproducible sin volver a
+  escribir el script. Si `ui/app.py` sigue creciendo, podría valer la
+  pena comitear una versión mínima de este script como test real.
+- Las tres preguntas de ejemplo se verificaron una vez, en esta sesión
+  -- no hay garantía de que sigan resolviendo igual si el corpus
+  cambia (nuevos dictámenes, cambios en `SUB.ChemicalName`) o si se
+  retoca el prompt del Nodo 1 en el futuro.

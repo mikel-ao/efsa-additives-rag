@@ -292,6 +292,27 @@ un error.
   límite por IP (mejora de UX, NO es protección real: usa una API interna
   no estable de Streamlit y las IPs se comparten/cambian con facilidad).
   No confundas una capa con la otra al documentar o modificar esto.
+- **`data/usage_log.json` NO va en git, igual que `data/last_update_check.txt`
+  -- inconsistencia real corregida (sesión 19-ago-2026), no una
+  hipótesis.** Ambos son el mismo tipo de archivo: contador de estado
+  runtime, escrito por `ui/app.py`, que se autorreinicia según la fecha
+  (`_load_usage()` descarta el contenido si `data.get("date") !=
+  str(date.today())`). `last_update_check.txt` ya estaba en
+  `.gitignore` desde el principio por este motivo; `usage_log.json` se
+  había quedado trackeado con un valor fijo (`git ls-files` lo
+  confirmaba), verificado ANTES de tocar nada -- no asumido por
+  analogía. Comitear un snapshot de este archivo es activamente
+  engañoso, no solo redundante: en producción (Streamlit Community
+  Cloud, disco efímero -- ver "Opción A, índice horneado" más arriba)
+  el valor comiteado se descarta en la primera consulta real del día de
+  todos modos (el chequeo de fecha lo resetea), así que el número fijo
+  en git nunca refleja el estado real de ningún entorno, ni local ni de
+  producción -- solo genera diffs espurios cada vez que alguien corre
+  la app en local (confirmado: dos verificaciones puntuales de UI en la
+  misma sesión bastaron para ensuciar el archivo, sin tocar código).
+  Sacado de git con `git rm --cached` (el archivo sigue en disco local,
+  solo deja de trackearse) + añadido a `.gitignore` junto a
+  `last_update_check.txt`.
 - **Precio LLM de referencia (ajustar si cambia):** DeepSeek V4-Flash,
   **~$0.0008-0.0020 por consulta según franja horaria -- RECALCULADO
   Y CERRADO (sesión 18-ago-2026, continuación 15)** con la tarifa

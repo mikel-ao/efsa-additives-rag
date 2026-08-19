@@ -3,6 +3,17 @@
 Asistente RAG sobre dictámenes regulatorios de reevaluación de aditivos
 alimentarios (EFSA, Reglamento UE 257/2010).
 
+**Arquitectura:** RAG orquestado con LangGraph -- 4 nodos con
+enrutamiento condicional (extracción de entidad -> retrieval híbrido ->
+verificación de vigencia -> generación). El grafo compila a un flujo
+fijo con una única bifurcación condicional (si el Nodo 1 no resuelve
+ninguna sustancia, se salta el Nodo 3) -- no es un sistema agéntico con
+bucle de decisión abierto: ningún nodo decide en tiempo de ejecución
+qué herramientas invocar o en qué orden, la secuencia está fijada de
+antemano.
+
+**Demo pública:** [efsa-additives-rag.streamlit.app](https://efsa-additives-rag.streamlit.app/)
+
 Documentación completa (objetivo, audiencia, arquitectura, stack, roadmap,
 limitaciones conocidas): [`docs/efsa-rag-proyecto.html`](docs/efsa-rag-proyecto.html)
 -- ábrelo en el navegador.
@@ -56,24 +67,37 @@ consultas reales, no solo con mocks:
 - `src/efsa_rag/graph/nodes.py` + `src/efsa_rag/graph/build.py` -- los
   4 nodos LangGraph conectados y compilados, incluida la restricción
   de comunicación de riesgo del Nodo 4 (el ADI nunca se redacta como
-  umbral de toxicidad).
+  umbral de toxicidad) y la resolución multi-candidato del Nodo 1:
+  cuando varios nombres de `SUB.ChemicalName` son razonablemente
+  parecidos a la sustancia mencionada en la pregunta (fuzzy matching
+  con `rapidfuzz`, restringido a las 246 sustancias con dictamen
+  resoluble del corpus, más normalización de guion/espacio para casos
+  como "Alpha tocopherol" vs. "Alpha-tocopherol"), el sistema nunca
+  elige uno en silencio -- resuelve y presenta todos los candidatos
+  plausibles por separado, cada uno con su propio dictamen vigente y
+  sus propios fragmentos narrativos, dejando que el usuario identifique
+  cuál buscaba.
 - `src/efsa_rag/mcp/server.py` -- servidor MCP con dos herramientas
-  (`search_efsa_opinion`, `get_reevaluation_status`) -- probado en
-  aislamiento, todavía no con un cliente MCP real (Claude Desktop u
-  otro).
+  (`search_efsa_opinion`, `get_reevaluation_status`), ambas con esquema
+  de salida rediseñado a **array de resultados siempre**
+  (`{"candidates_found", "candidates_shown", "results": [...]}`) --
+  nunca un objeto singular con un candidato elegido en silencio,
+  consistente con la disciplina de resolución multi-candidato de
+  arriba. Probado en aislamiento, todavía no con un cliente MCP real
+  (Claude Desktop u otro).
 - `src/efsa_rag/ui/app.py` -- demo Streamlit: candado de refresco 24h,
   límites de consulta por presupuesto diario, y descarga de los datos
   pesados desde MEGA S4 en el arranque (ver "Deploy" más abajo).
 
 Pendiente (detalle completo y prioridad real en `CLAUDE.md`, no en
 ningún `ROADMAP.md` -- ese archivo no existe en este repo): QA del
-corpus de 162 dictámenes contra las calls for data activas, resolución
-más robusta de nombre de sustancia en el Nodo 1 (español, E-numbers, y
-variantes con prefijo/sufijo del mismo nombre -- mitigado
-parcialmente, sin cerrar), detección de ambigüedad en el Nodo 3
-(diferida a propósito, 0 casos ambiguos detectados sobre 247 sustancias
-hasta hoy), y el primer deploy real en Streamlit Community Cloud (ver
-el riesgo de memoria documentado en la sección de deploy).
+corpus de 162 dictámenes contra las calls for data activas; casos de
+typo agresivo o nombre poco conocido que el Nodo 1 rechaza identificar
+del todo antes de que la resolución multi-candidato pueda intervenir
+(ej. "plai caramel" dentro de una pregunta completa -- el LLM responde
+`NONE` sin proponer ningún nombre, así que el fuzzy matching nunca
+llega a invocarse); y detección de ambigüedad en el Nodo 3 (diferida a
+propósito, 0 casos ambiguos detectados sobre 247 sustancias hasta hoy).
 
 ## Setup
 
@@ -91,6 +115,16 @@ pytest  # los tests de joins se saltan automáticamente sin el xlsx
 ```
 
 ## Deploy en Streamlit Community Cloud
+
+**La demo está desplegada y funcionando en producción:**
+[efsa-additives-rag.streamlit.app](https://efsa-additives-rag.streamlit.app/)
+(primer deploy exitoso, 18-ago-2026). Verificado con consultas reales
+en producción, no solo en local: ADI de aspartamo (caso de referencia
+tier 1), resolución multi-candidato de tocoferol (4 candidatos
+presentados por separado, sin fusionarlos), dióxido de titanio (TiO2,
+caso conocido de reevaluación), y sustancias no identificadas por el
+corpus (mensaje honesto, sin afirmar falsamente que "el corpus todavía
+no está indexado" -- ver `CLAUDE.md`, pendiente #2).
 
 El repo de GitHub se queda público y sin datos pesados (`data/raw/*.xlsx`,
 `data/chroma/`, `data/processed/` siguen en `.gitignore`) -- casi la mitad
@@ -137,17 +171,51 @@ python scripts/upload_deploy_assets.py              # sube de verdad (~600 MB)
    para que esto funcione.
 4. Deploy.
 
-**Riesgo conocido, no resuelto, documentado a propósito (no lo des por
-sorpresa si el primer intento falla) -- ver CLAUDE.md/PROGRESS.md,
-sesión 18-ago-2026, continuaciones 18-21 para el detalle completo de
-la medición:** el pipeline completo (Streamlit + Chroma + modelo de
-embeddings + una consulta real) mide **~1.150-1.170 MB de RAM**, por
-encima del límite de ~1 GB del tier gratuito de Streamlit Community
-Cloud -- con las tres optimizaciones ya aplicadas (ONNX int8, torch
-CPU-only, `usecols` en `OpenFoodToxStore`). El primer intento de deploy
-real puede fallar por OOM en la primera consulta; si eso pasa, no es un
-fallo de configuración de este documento, es el límite de memoria ya
-conocido y sin cerrar.
+**Llegar a un deploy que arrancara y respondiera de verdad exigió tres
+optimizaciones de memoria reales, medidas antes de aplicarlas, no
+teóricas:**
+- Backend de embeddings cambiado a ONNX + pesos int8 (en vez del
+  "calentamiento" de PyTorch en la primera inferencia, ~400 MB por sí
+  solo) -- ver "Backend de embeddings: ONNX int8, no torch" en
+  `CLAUDE.md`.
+- `torch` fijado a su build CPU-only (`torch==2.13.0+cpu`) vía
+  environment markers en `requirements.txt` (`sys_platform == "linux"`),
+  para que el pin se aplique en el entorno de deploy sin depender de
+  que alguien recuerde comentarlo/descomentarlo a mano por plataforma.
+- `usecols` explícito en las 5 hojas que carga `OpenFoodToxStore` --
+  evita traer a memoria columnas del xlsx que ningún caller usa.
+
+**Y varios ajustes de configuración**, distintos de la optimización de
+memoria, encontrados con el arranque real fallando y diagnosticados
+antes de corregir (no adivinados):
+- `deploy_assets.py` no cargaba `.env` -- `load_dotenv(dotenv_path=...)`
+  explícito añadido, porque las credenciales de MEGA S4 no se leían
+  solas en una máquina nueva sin nada exportado a mano en la terminal
+  (sin efecto en el propio Streamlit Cloud, donde las credenciales
+  llegan vía "Secrets" como variables de entorno reales, no por `.env`).
+- `-e .` añadido a `requirements.txt` -- Streamlit Community Cloud solo
+  ejecuta `pip install -r requirements.txt` al desplegar, sin ningún
+  paso equivalente al `pip install -e .` que sí se hace en desarrollo
+  local; sin esto, `import efsa_rag` fallaba en el arranque
+  (`ModuleNotFoundError`) antes incluso de intentar cargar el grafo.
+
+El proceso completo, con las cifras de memoria medidas en cada paso y
+cada bug encontrado en el camino, está documentado con detalle en
+`CLAUDE.md` y `PROGRESS.md` si quieres reproducirlo o entender por qué
+cada pieza está donde está.
+
+**Nota de honestidad sobre la medición de memoria que motivó las
+optimizaciones de arriba:** medida de forma aislada en local (Streamlit
++ Chroma + modelo de embeddings + una consulta real, sin el resto de la
+infraestructura de Streamlit Cloud alrededor), el pipeline llegó a
+~1.150-1.170 MB, por encima del límite nominal de ~1 GB del tier
+gratuito -- una señal de riesgo real en su momento, no descartada a la
+ligera. El deploy real terminó arrancando y respondiendo consultas sin
+problema pese a esa cifra, lo que sugiere que la medición aislada no es
+1:1 representativa del límite aplicado en producción. No se ha vuelto a
+medir memoria dentro del propio contenedor de producción -- si en el
+futuro empieza a fallar por OOM bajo más carga, ese es el primer sitio
+a mirar.
 
 ## Aviso
 

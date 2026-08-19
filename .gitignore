@@ -6,5 +6,6 @@ data/raw/pdfs/
 data/processed/
 data/chroma/
 data/last_update_check.txt
+data/usage_log.json
 .venv/
 *.egg-info/

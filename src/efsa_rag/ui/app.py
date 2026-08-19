@@ -160,6 +160,37 @@ def render_disclaimer() -> None:
         "médico. Las respuestas citan el dictamen EFSA correspondiente; "
         "verifica siempre la fuente original antes de tomar decisiones."
     )
+    st.caption(
+        "ADI = Acceptable Daily Intake (Ingesta Diaria Admisible) -- el "
+        "valor de referencia de exposición segura que usa EFSA."
+    )
+
+
+# Verificadas con llamada real a la API antes de añadirse aquí (sesión
+# 19-ago-2026) -- el fraseo en español puede resolver de forma distinta
+# al inglés, no se asume. Las tres devuelven una respuesta coherente:
+# aspartamo resuelve exacto con ADI numérico, TiO2 resuelve exacto sin
+# ADI (caso conocido), tocoferol dispara la resolución multi-candidato
+# (4 sustancias, ninguna con ADI numérico) -- ejemplo deliberado de un
+# caso ambiguo real, no solo del camino feliz.
+EXAMPLE_QUESTIONS = [
+    "¿Cuál es el ADI del aspartamo y en qué estudio se basa?",
+    "¿Por qué el dióxido de titanio no tiene un ADI numérico?",
+    "¿Cuál es el ADI del tocoferol?",
+]
+
+
+def render_example_questions() -> None:
+    """Botones que rellenan el campo de pregunta -- deben ejecutarse
+    ANTES de instanciar el `st.text_input` con key="query_input" en
+    `main()`: al pulsar un botón, Streamlit re-ejecuta el script desde
+    arriba, y como este bloque va antes en el código, el valor nuevo de
+    `st.session_state.query_input` ya está puesto cuando el
+    `text_input` se crea más abajo en la misma pasada."""
+    st.caption("Preguntas de ejemplo:")
+    for pregunta in EXAMPLE_QUESTIONS:
+        if st.button(pregunta, key=f"ejemplo_{pregunta}"):
+            st.session_state.query_input = pregunta
 
 
 def _render_answer(query: str) -> None:
@@ -213,8 +244,11 @@ def main() -> None:
     st.set_page_config(page_title="EFSA Additives RAG", page_icon="🧪")
     st.title("Reevaluación de aditivos alimentarios (EFSA)")
     render_disclaimer()
+    render_example_questions()
 
-    query = st.text_input("Pregunta sobre un aditivo (nombre o E-number)")
+    query = st.text_input(
+        "Pregunta sobre un aditivo (nombre o E-number)", key="query_input"
+    )
     if query:
         permitido, mensaje = check_and_register_query()
         if not permitido:
