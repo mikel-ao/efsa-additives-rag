@@ -2,32 +2,35 @@
 Ensamblado del grafo LangGraph completo -- Nodo 1 (extracción de
 entidad) -> Nodo 2 (retrieval híbrido) -> Nodo 3 (verificación de
 vigencia) -> Nodo 4 (generación), con una arista condicional para el
-caso de que el Nodo 1 no resuelva `substance_uuid`.
+caso de que el Nodo 1 no resuelva ningún candidato en
+`substance_candidates`.
 
 Decisión de diseño explícita -- qué pasa si el Nodo 1 no resuelve
-`substance_uuid` (LLM respondió NONE, o el nombre no coincidió exacto
-en `SUB`, ver graph/nodes.py::extract_entity_node):
+ningún candidato (LLM respondió NONE, o el nombre no coincidió con
+NINGÚN candidato -- ni exacto, ni normalizado, ni fuzzy -- ver
+graph/nodes.py::extract_entity_node y
+OpenFoodToxStore.resolve_substance_candidates):
 
 **El grafo SIGUE hasta el Nodo 4, no corta antes.** Pero NO llama al
-Nodo 3 en ese caso -- `verify_currency_node` exige `substance_uuid` no
-nulo y lanza `ValueError` si se le llama sin él (ver su código, sin
+Nodo 3 en ese caso -- `verify_currency_node` exige al menos un candidato
+y lanza `ValueError` si se le llama sin ninguno (ver su código, sin
 cambios aquí), así que sería un crash, no una respuesta degradada. La
-arista condicional después del Nodo 2 decide: si hay
-`substance_uuid`, va al Nodo 3 y de ahí al Nodo 4 (camino normal); si
-no, salta el Nodo 3 y va DIRECTO al Nodo 4.
+arista condicional después del Nodo 2 decide: si `substance_candidates`
+no está vacío, va al Nodo 3 y de ahí al Nodo 4 (camino normal); si está
+vacío, salta el Nodo 3 y va DIRECTO al Nodo 4.
 
 Por qué seguir hasta el Nodo 4 en vez de cortar antes: el Nodo 4 ya
 está diseñado para degradar con gracia en ambos casos de falta de
 datos --
-- `structured_result` nunca se pone en el estado (el Nodo 3 no se
-  llamó) -- `state.get("structured_result")` devuelve `None` exactamente
-  igual que si el Nodo 3 lo hubiera puesto a `None` explícitamente
-  (`GraphState` es un `TypedDict(total=False)`), y
-  `_format_structured_result(None)` ya cubre ese caso con el mensaje
-  "No se ha podido determinar un dictamen vigente..." (regla 4 de
-  `NODE_4_GROUNDING_RULES`).
+- `structured_results` nunca se pone en el estado (el Nodo 3 no se
+  llamó) -- `state.get("structured_results")` devuelve `None`
+  exactamente igual que si el Nodo 3 lo hubiera puesto a `{}`
+  explícitamente (`GraphState` es un `TypedDict(total=False)`), y
+  `_build_user_prompt` con `substance_candidates` vacío ya cubre ese
+  caso con el mensaje "No se ha podido determinar un dictamen
+  vigente..." (regla 4 de `NODE_4_GROUNDING_RULES`).
 - `retrieved_chunks` queda vacío porque el Nodo 2 ya deja `[]` sin
-  llamar a Chroma cuando no hay `substance_uuid` (ver
+  llamar a Chroma cuando `substance_candidates` está vacío (ver
   `hybrid_retrieval_node`) -- `_format_retrieved_chunks([])` ya cubre
   ese caso.
 
@@ -39,14 +42,14 @@ al usuario sin ninguna respuesta en vez de una explicación útil, que es
 peor experiencia y no ahorra ninguna llamada cara (el Nodo 1 ya se
 llamó, que es la única llamada al LLM en el camino corto).
 
-`vigencia_ambigua` (poblado solo por el Nodo 3) queda sin definir en el
-camino corto -- verificado que ningún otro nodo lo lee, así que no hay
-efecto secundario por saltárselo.
+`currency_verification_incomplete` (poblado solo por el Nodo 3) queda
+sin definir en el camino corto -- verificado que ningún otro nodo lo
+lee, así que no hay efecto secundario por saltárselo.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from langgraph.graph import END, StateGraph
@@ -63,7 +66,7 @@ from efsa_rag.graph.nodes import (
     verify_currency_node,
 )
 from efsa_rag.ingestion.embedding_model import load_embedding_model
-from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore, OpinionReference
+from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore, OpinionReference, SubstanceCandidate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 XLSX_PATH = REPO_ROOT / "data" / "raw" / "OFT3_0_export_repository.xlsx"
@@ -75,7 +78,7 @@ def _route_after_retrieval(state: GraphState) -> str:
     """Arista condicional -- ver el razonamiento completo en el
     docstring del módulo. Único punto de la orquestación que decide si
     el Nodo 3 se llama o no."""
-    return "verify_currency" if state.get("substance_uuid") else "generate_answer"
+    return "verify_currency" if state.get("substance_candidates") else "generate_answer"
 
 
 def build_graph(deps: NodeDependencies) -> CompiledStateGraph:
@@ -175,12 +178,31 @@ class AnswerResult:
     (ej. la herramienta MCP `search_efsa_opinion`) sepa qué sustancia se
     identificó sin tener que releer `structured_result.title` (que
     puede ser `None` si no hay dictamen vigente, aunque la sustancia SÍ
-    se haya identificado -- son señales distintas, no intercambiables)."""
+    se haya identificado -- son señales distintas, no intercambiables).
+
+    `substance_candidates`/`structured_results` AÑADIDOS (sesión
+    19-ago-2026, resolución multi-candidato) -- CAMPOS ADITIVOS con
+    default, colocados DESPUÉS de los 4 campos originales a propósito:
+    el servidor MCP (`mcp/server.py`) queda deliberadamente FUERA de este
+    cambio (ver CLAUDE.md, pendiente explícito) y sigue construyendo/
+    consumiendo `AnswerResult` con el contrato de un único resultado --
+    `tests/test_mcp_server.py` construye `AnswerResult(...)` directamente
+    y NO debía tocarse. `structured_result` (singular) sigue poblado,
+    ahora con el candidato top (`candidates[0]`, ya ordenado de forma
+    determinista por `_candidate_sort_key` -- ver
+    `OpenFoodToxStore.resolve_substance_candidates`) para mantener ese
+    contrato con cero cambios visibles cuando solo hay 1 candidato. Un
+    caller que SÍ quiera ver todos los candidatos (no el MCP, que se
+    queda con el campo singular) usa estos dos campos nuevos en vez de
+    reconstruir el retrieval a mano -- mismo principio que motivó esta
+    clase en origen."""
 
     answer: str
     retrieved_chunks: list[RetrievedChunk]
     structured_result: OpinionReference | None
     substance_name: str | None
+    substance_candidates: list[SubstanceCandidate] = field(default_factory=list)
+    structured_results: dict[str, OpinionReference | None] = field(default_factory=dict)
 
 
 def answer_question(query: str) -> AnswerResult:
@@ -196,7 +218,11 @@ def answer_question(query: str) -> AnswerResult:
     `str` de antes -- solo invocaciones manuales sueltas en sesiones de
     verificación, no código persistido. Si en el futuro `ui/app.py` u
     otro caller empieza a usar esta función, debe leer `.answer`, no
-    tratar el resultado como string directamente."""
+    tratar el resultado como string directamente.
+
+    `structured_result` (singular, compatibilidad MCP) se rellena con el
+    candidato top de `substance_candidates` -- ver el docstring de
+    `AnswerResult`."""
     global _default_deps, _default_graph
 
     if _default_deps is None:
@@ -205,11 +231,17 @@ def answer_question(query: str) -> AnswerResult:
         _default_graph = build_graph(_default_deps)
 
     result = _default_graph.invoke({"user_query": query})
+    candidates = result.get("substance_candidates") or []
+    structured_results = result.get("structured_results") or {}
+    top_structured = structured_results.get(candidates[0].substance_uuid) if candidates else None
+
     return AnswerResult(
         answer=result["answer"],
         retrieved_chunks=result.get("retrieved_chunks") or [],
-        structured_result=result.get("structured_result"),
+        structured_result=top_structured,
         substance_name=result.get("substance_name"),
+        substance_candidates=candidates,
+        structured_results=structured_results,
     )
 
 
@@ -248,9 +280,16 @@ def resolve_current_opinion(query: str) -> ReevaluationStatus:
     Chroma ni el xlsx.
 
     Réplica exacta del guardia ya usado en `_route_after_retrieval`
-    para decidir si se llama al Nodo 3 (si el Nodo 1 no resolvió
-    `substance_uuid`, `verify_currency_node` lanzaría `ValueError` si
-    se le llamara) -- mismo criterio, no una regla nueva.
+    para decidir si se llama al Nodo 3 (si el Nodo 1 no resolvió ningún
+    `substance_candidates`, `verify_currency_node` lanzaría `ValueError`
+    si se le llamara) -- mismo criterio, no una regla nueva.
+
+    Con 2+ candidatos, el Nodo 3 ya calcula TODOS (coste ya pagado, no se
+    duplica) pero esta función devuelve solo el candidato top
+    (`candidates[0]`, orden determinista vía `_candidate_sort_key`) --
+    ver CLAUDE.md, MCP (`mcp/server.py`) queda deliberadamente fuera del
+    cambio de resolución multi-candidato y sigue con el contrato de un
+    único resultado.
     """
     global _default_deps
 
@@ -258,14 +297,19 @@ def resolve_current_opinion(query: str) -> ReevaluationStatus:
         _default_deps = build_default_deps()
 
     state = extract_entity_node({"user_query": query}, _default_deps)
-    if not state.get("substance_uuid"):
-        return ReevaluationStatus(substance_name=None, substance_uuid=None, structured_result=None)
+    candidates = state.get("substance_candidates") or []
+    if not candidates:
+        return ReevaluationStatus(
+            substance_name=state.get("substance_name"), substance_uuid=None, structured_result=None
+        )
 
     state = verify_currency_node(state, _default_deps)
+    top = candidates[0]
+    structured_results = state.get("structured_results") or {}
     return ReevaluationStatus(
         substance_name=state.get("substance_name"),
-        substance_uuid=state.get("substance_uuid"),
-        structured_result=state.get("structured_result"),
+        substance_uuid=top.substance_uuid,
+        structured_result=structured_results.get(top.substance_uuid),
     )
 
 

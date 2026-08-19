@@ -62,6 +62,11 @@ torch ; sys_platform != "linux"
 # extra), ver CLAUDE.md.
 sentence-transformers[onnx]>=3.0
 chromadb>=0.5
+# Fuzzy matching de nombres de sustancia (Nodo 1, resolve_substance_candidates
+# en ingestion/openfoodtox.py) -- verificado sin conflicto con las versiones
+# ya fijadas arriba (pip install --dry-run limpio, sesión 19-ago-2026).
+# Paquete C++/Cython puro, sin arrastrar torch/numpy como dependencia nueva.
+rapidfuzz>=3.14
 
 # orquestación
 # Versión exacta, mismo motivo que langchain/langchain-community/

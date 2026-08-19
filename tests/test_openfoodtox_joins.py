@@ -22,6 +22,7 @@ from efsa_rag.ingestion.openfoodtox import (
     ADI_LOWER_VALUE_COLUMN,
     ADI_UNIT_COLUMN,
     DISCUSSION_COLUMN,
+    FUZZY_MATCH_LOW_THRESHOLD,
     OpenFoodToxStore,
 )
 
@@ -479,3 +480,126 @@ def test_substances_per_dossier_glutamates_group_returns_all_six(
         "Monoammonium L-glutamate",
         "Magnesium diglutamate",
     }, f"Se esperaban las 6 sales del grupo de glutamatos, se obtuvo: {names!r}"
+
+
+# --------------------------------------------------------------------- #
+# resolve_substance_candidates() -- resolución multi-candidato (sesión
+# 19-ago-2026, ver CLAUDE.md, diseño de resolución multi-candidato).
+# Los números de score citados en los asserts vienen de la calibración
+# real contra el universo de 246 sustancias resolubles hecha en esa
+# sesión -- si cambian, es señal de que el universo o el corpus
+# cambiaron, no que el test esté mal.
+# --------------------------------------------------------------------- #
+
+
+def test_resolve_substance_candidates_exact_match_unchanged(store: OpenFoodToxStore):
+    """Un nombre exacto sigue resolviendo a un único candidato tier
+    "exact", score 100 -- mismo comportamiento que substance_uuid_by_name
+    de siempre, sin regresión."""
+    candidates = store.resolve_substance_candidates("Aspartame")
+
+    assert len(candidates) == 1
+    assert candidates[0].match_type == "exact"
+    assert candidates[0].match_score == 100.0
+    assert candidates[0].substance_uuid == store.substance_uuid_by_name("Aspartame")
+
+
+def test_resolve_substance_candidates_normalizes_hyphen_space_mismatch(
+    store: OpenFoodToxStore,
+):
+    """Diagnóstico de tocoferol (sesión 19-ago-2026): la hipótesis del
+    símbolo griego (alpha/beta/gamma vs. α/β/γ) se probó y se descartó
+    con datos reales -- SUB no tiene ninguna fila de tocoferol con
+    símbolo griego. La causa real es que el Nodo 1 (LLM) hyphena de
+    forma inconsistente ("Alpha tocopherol" sin guion, mientras SUB solo
+    tiene "Alpha-tocopherol" con guion). Este test fija el fix de
+    normalización espacio<->guion como coincidencia EXACTA adicional,
+    sin fuzzy."""
+    for query, expected_name in (
+        ("Alpha tocopherol", "Alpha-tocopherol"),
+        ("Beta tocopherol", "beta-tocopherol"),
+    ):
+        candidates = store.resolve_substance_candidates(query)
+        assert len(candidates) == 1, f"{query!r} -> {candidates!r}"
+        assert candidates[0].match_type == "exact_normalized"
+        assert candidates[0].match_score == 100.0
+        assert candidates[0].chemical_name == expected_name
+
+
+def test_resolve_substance_candidates_typo_resolves_via_fuzzy(store: OpenFoodToxStore):
+    """Typo real ('plai caramel' por 'Plain caramel') -- debe resolver
+    vía fuzzy, con 'Plain caramel' como candidato de mayor score."""
+    candidates = store.resolve_substance_candidates("plai caramel")
+
+    assert candidates, "Se esperaba al menos 1 candidato fuzzy"
+    assert all(c.match_type == "fuzzy" for c in candidates)
+    assert candidates[0].chemical_name == "Plain caramel"
+    assert candidates[0].match_score == pytest.approx(88.0, abs=0.5)
+
+
+def test_resolve_substance_candidates_generic_tocopherol_returns_multiple(
+    store: OpenFoodToxStore,
+):
+    """'Tocopherol' (salida REAL del Nodo 1 para preguntas genéricas de
+    tocoferol, verificado con llamada real a la API en esta sesión) no
+    coincide con ninguna de las 7 filas reales de SUB (todas con
+    prefijo) -- debe devolver VARIOS candidatos plausibles, nunca elegir
+    uno en silencio. Los 4 esperados son los mismos 4 de la calibración
+    real de esta sesión."""
+    candidates = store.resolve_substance_candidates("Tocopherol")
+    names = {c.chemical_name for c in candidates}
+
+    assert names == {
+        "Delta-tocopherol",
+        "Gamma-tocopherol",
+        "DL-alpha-tocopherol",
+        "Tocopherol-rich extract",
+    }
+    assert all(c.match_type == "fuzzy" for c in candidates)
+    assert all(c.match_score >= FUZZY_MATCH_LOW_THRESHOLD for c in candidates)
+    # "Glycerol" (sustancia real no relacionada) debe quedar excluido --
+    # verificado en la calibración que da 55,56, por debajo del umbral.
+    assert "Glycerol" not in names
+
+
+def test_resolve_substance_candidates_tocopherol_tie_break_is_deterministic(
+    store: OpenFoodToxStore,
+):
+    """Desempate determinista (_candidate_sort_key, ver CLAUDE.md, punto
+    5 del diseño de resolución multi-candidato): Delta-tocopherol y
+    Gamma-tocopherol empatan EXACTO a score (69,23, verificado en la
+    calibración real) -- el orden debe ser siempre el mismo, con
+    Delta-tocopherol primero (orden alfabético del nombre como
+    desempate, "d" < "g"). Repetido varias veces para confirmar que no
+    es un orden accidental de un único run."""
+    for _ in range(3):
+        candidates = store.resolve_substance_candidates("Tocopherol")
+        assert candidates[0].chemical_name == "Delta-tocopherol"
+        assert candidates[1].chemical_name == "Gamma-tocopherol"
+        assert candidates[0].match_score == candidates[1].match_score
+
+
+def test_resolve_substance_candidates_unrelated_query_returns_empty(
+    store: OpenFoodToxStore,
+):
+    """Consultas sin relación real con ninguna sustancia del corpus deben
+    devolver una lista vacía -- cero falsos positivos, verificado en la
+    calibración real (máximo 46-57 sobre el universo restringido, por
+    debajo del umbral de 60)."""
+    for query in ("quantum flux capacitor", "banana smoothie recipe"):
+        assert store.resolve_substance_candidates(query) == []
+
+
+def test_resolve_substance_candidates_recovers_duplicate_chemical_name(
+    store: OpenFoodToxStore,
+):
+    """Bug latente corregido en esta sesión: SUB.ChemicalName tiene 9
+    nombres duplicados con distinto UUID -- 'Sodium saccharin' es uno de
+    ellos y SÍ está en el universo de 246 sustancias resolubles.
+    substance_uuid_by_name (sin cambios) solo devuelve el primero;
+    resolve_substance_candidates debe devolver AMBOS."""
+    candidates = store.resolve_substance_candidates("Sodium saccharin")
+
+    assert len(candidates) == 2
+    assert all(c.match_type == "exact" for c in candidates)
+    assert len({c.substance_uuid for c in candidates}) == 2

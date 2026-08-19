@@ -46,6 +46,7 @@ from efsa_rag.graph.nodes import (
     NODE_4_RETRY_MAX_TOKENS,
     NodeDependencies,
     RetrievedChunk,
+    _build_user_prompt,
     _format_retrieved_chunks,
     _format_structured_result,
     extract_entity_node,
@@ -53,7 +54,7 @@ from efsa_rag.graph.nodes import (
     hybrid_retrieval_node,
 )
 from efsa_rag.ingestion.embedding_model import load_embedding_model
-from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore, OpinionReference
+from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore, OpinionReference, SubstanceCandidate
 
 CHROMA_PERSIST_DIR = Path(__file__).parent.parent / "data" / "chroma"
 CHROMA_COLLECTION_NAME = "efsa_reevaluation_chunks"
@@ -227,7 +228,9 @@ def test_hybrid_retrieval_node_aspartame_real_query(chroma_deps: NodeDependencie
 
     state = {
         "user_query": "What genotoxicity and carcinogenicity studies were considered for aspartame?",
-        "substance_uuid": aspartame_uuid,
+        "substance_candidates": [
+            SubstanceCandidate(aspartame_uuid, "Aspartame", "exact", 100.0)
+        ],
     }
 
     new_state = hybrid_retrieval_node(state, chroma_deps)
@@ -245,8 +248,8 @@ def test_hybrid_retrieval_node_aspartame_real_query(chroma_deps: NodeDependencie
     assert all(c.substance_resolution_tier == 1 for c in chunks)
 
 
-def test_hybrid_retrieval_node_no_uuid_skips_chroma_entirely(chroma_deps: NodeDependencies):
-    """Si el Nodo 1 no resolvió substance_uuid, el Nodo 2 debe dejar
+def test_hybrid_retrieval_node_no_candidates_skips_chroma_entirely(chroma_deps: NodeDependencies):
+    """Si el Nodo 1 no resolvió ningún candidato, el Nodo 2 debe dejar
     retrieved_chunks vacío SIN llamar a Chroma -- verificado pasando un
     vectorstore que lanzaría si se le llamara, para confirmar que de
     verdad no se invoca (no basta con que el resultado esté vacío por
@@ -254,18 +257,55 @@ def test_hybrid_retrieval_node_no_uuid_skips_chroma_entirely(chroma_deps: NodeDe
 
     class _ExplodingVectorStore:
         def query(self, *args, **kwargs):
-            raise AssertionError("No debería llamarse a Chroma sin substance_uuid")
+            raise AssertionError("No debería llamarse a Chroma sin substance_candidates")
 
     deps = NodeDependencies(
         store=chroma_deps.store,
         vectorstore=_ExplodingVectorStore(),
         embedding_model=chroma_deps.embedding_model,
     )
-    state = {"user_query": "¿Aspartamo es seguro?", "substance_uuid": None}
+    state = {"user_query": "¿Aspartamo es seguro?", "substance_candidates": []}
 
     new_state = hybrid_retrieval_node(state, deps)
 
     assert new_state["retrieved_chunks"] == []
+
+
+def test_hybrid_retrieval_node_multiple_candidates_reduces_k_and_concatenates(
+    chroma_deps: NodeDependencies,
+):
+    """Con 4 candidatos (caso real de tocoferol), el reparto de
+    presupuesto debe dar k=3 por candidato (15 // 4 == 3, dentro de
+    [MIN_K_PER_CANDIDATE, DEFAULT_RETRIEVAL_K]) y `retrieved_chunks` debe
+    ser la concatenación de los 4, cada uno con su propio substance_uuid
+    -- no solo los chunks del primero."""
+    store = chroma_deps.store
+    names = [
+        "Delta-tocopherol",
+        "Gamma-tocopherol",
+        "DL-alpha-tocopherol",
+        "Tocopherol-rich extract",
+    ]
+    candidates = []
+    for name in names:
+        uuid = store.substance_uuid_by_name(name)
+        assert uuid is not None, f"{name!r} debería resolver en SUB"
+        candidates.append(SubstanceCandidate(uuid, name, "fuzzy", 65.0))
+
+    state = {
+        "user_query": "safety assessment of tocopherols as food additives",
+        "substance_candidates": candidates,
+    }
+
+    new_state = hybrid_retrieval_node(state, chroma_deps)
+    chunks = new_state["retrieved_chunks"]
+
+    seen_uuids = {c.substance_uuid for c in chunks}
+    assert seen_uuids <= {c.substance_uuid for c in candidates}
+    # Al menos 2 candidatos distintos deben haber aportado chunks -- no
+    # basta con que la lista no esté vacía, confirma que de verdad se
+    # consultó Chroma una vez por candidato, no solo el primero.
+    assert len(seen_uuids) >= 2
 
 
 # --------------------------------------------------------------------- #
@@ -302,7 +342,10 @@ def test_extract_entity_node_resolves_aspartame_from_real_english_query(
     assert expected_uuid is not None
 
     assert new_state["substance_name"] is not None
-    assert new_state["substance_uuid"] == expected_uuid
+    candidates = new_state["substance_candidates"]
+    assert len(candidates) == 1
+    assert candidates[0].substance_uuid == expected_uuid
+    assert candidates[0].match_type == "exact"
 
 
 def test_extract_entity_node_unrelated_query_resolves_to_none(store: OpenFoodToxStore, llm_client):
@@ -315,7 +358,7 @@ def test_extract_entity_node_unrelated_query_resolves_to_none(store: OpenFoodTox
     new_state = extract_entity_node(state, deps)
 
     assert new_state["substance_name"] is None
-    assert new_state["substance_uuid"] is None
+    assert new_state["substance_candidates"] == []
 
 
 # --------------------------------------------------------------------- #
@@ -356,7 +399,8 @@ def _base_state(**overrides) -> dict:
     state = {
         "user_query": "What is the ADI of shellac and what study is it based on?",
         "substance_name": "Shellac",
-        "structured_result": None,
+        "substance_candidates": [],
+        "structured_results": {},
         "retrieved_chunks": None,
     }
     state.update(overrides)
@@ -459,3 +503,93 @@ def test_generate_answer_node_no_retry_when_first_response_is_not_truncated():
     assert new_state["answer"] == "Respuesta completa sin truncar."
     assert len(client.calls) == 1
     assert client.calls[0]["max_tokens"] == NODE_4_MAX_TOKENS
+
+
+# --------------------------------------------------------------------- #
+# Nodo 4 -- _build_user_prompt con candidatos múltiples (sesión 19-ago-2026)
+# --------------------------------------------------------------------- #
+
+
+def _fake_candidate(chemical_name: str, score: float, uuid: str) -> SubstanceCandidate:
+    return SubstanceCandidate(uuid, chemical_name, "fuzzy", score)
+
+
+def _fake_opinion(uuid: str, title: str) -> OpinionReference:
+    return OpinionReference(
+        dossier_uuid=uuid, date_of_evaluation=None, title=title, doc_type="EFSA opinion", doi=None
+    )
+
+
+def test_build_user_prompt_single_candidate_matches_legacy_format():
+    """Con 0 o 1 candidato, el prompt debe seguir el mismo formato de
+    siempre (sin envoltorio de "candidato 1 de N") -- regresión contra
+    el comportamiento ya probado en sesiones anteriores (aspartamo,
+    Shellac)."""
+    candidate = _fake_candidate("Aspartame", 100.0, "uuid-aspartame")
+    state = {
+        "user_query": "What is the ADI of aspartame?",
+        "substance_name": "Aspartame",
+        "substance_candidates": [candidate],
+        "structured_results": {"uuid-aspartame": _fake_opinion("uuid-aspartame", "Re-eval of aspartame")},
+        "retrieved_chunks": [],
+    }
+
+    prompt = _build_user_prompt(state)
+
+    assert "=== Candidato" not in prompt
+    assert "Se han identificado" not in prompt
+    assert "Sustancia identificada: Aspartame" in prompt
+    assert "Re-eval of aspartame" in prompt
+
+
+def test_build_user_prompt_multiple_candidates_presents_each_separately():
+    """Con 2+ candidatos (caso real de tocoferol), el prompt debe
+    presentar cada uno en su propio bloque, con su nombre, e instruir a
+    no fusionarlos -- decisión de producto explícita: nunca elegir uno
+    en silencio."""
+    candidates = [
+        _fake_candidate("Delta-tocopherol", 69.23, "uuid-delta"),
+        _fake_candidate("Gamma-tocopherol", 69.23, "uuid-gamma"),
+    ]
+    state = {
+        "user_query": "Is tocopherol safe as a food additive?",
+        "substance_name": "Tocopherol",
+        "substance_candidates": candidates,
+        "structured_results": {
+            "uuid-delta": _fake_opinion("uuid-delta", "Re-eval of Delta-tocopherol"),
+            "uuid-gamma": _fake_opinion("uuid-gamma", "Re-eval of Gamma-tocopherol"),
+        },
+        "retrieved_chunks": [],
+        "candidates_truncated": False,
+    }
+
+    prompt = _build_user_prompt(state)
+
+    assert "Se han identificado 2 sustancias" in prompt
+    assert "=== Candidato 1: Delta-tocopherol" in prompt
+    assert "=== Candidato 2: Gamma-tocopherol" in prompt
+    assert "Re-eval of Delta-tocopherol" in prompt
+    assert "Re-eval of Gamma-tocopherol" in prompt
+    assert "sin fusionarlas" in prompt
+    assert "Hay más de" not in prompt  # candidates_truncated=False
+
+
+def test_build_user_prompt_truncated_candidates_announces_it_explicitly():
+    """Si `candidates_truncated` es True, el prompt debe anunciarlo
+    explícitamente -- nunca en silencio."""
+    candidates = [_fake_candidate("Delta-tocopherol", 69.23, "uuid-delta"), _fake_candidate(
+        "Gamma-tocopherol", 69.23, "uuid-gamma"
+    )]
+    state = {
+        "user_query": "Is tocopherol safe?",
+        "substance_name": "Tocopherol",
+        "substance_candidates": candidates,
+        "structured_results": {},
+        "retrieved_chunks": [],
+        "candidates_truncated": True,
+    }
+
+    prompt = _build_user_prompt(state)
+
+    assert "Hay más de" in prompt
+    assert "se muestran las" in prompt

@@ -14,7 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore, OpinionReference
+from efsa_rag.ingestion.openfoodtox import (
+    MAX_CANDIDATES_SHOWN,
+    OpenFoodToxStore,
+    OpinionReference,
+    SubstanceCandidate,
+)
 
 from efsa_rag.graph.llm_client import LLMClient
 
@@ -130,25 +135,35 @@ class RetrievedChunk:
 class GraphState(TypedDict, total=False):
     user_query: str
     substance_name: str | None
-    substance_uuid: str | None
-    structured_result: OpinionReference | None
+    # Sustituye a `substance_uuid: str | None` (sesión 19-ago-2026) --
+    # decisión de producto explícita del usuario, distinta de "elegir el
+    # mejor candidato": cuando el Nodo 1 encuentra varios nombres
+    # razonablemente parecidos en OpenFoodTox (typo, o un nombre genérico
+    # del LLM que no distingue entre variantes reales -- ver
+    # OpenFoodToxStore.resolve_substance_candidates y CLAUDE.md, diseño de
+    # resolución multi-candidato), el sistema NUNCA elige uno en silencio:
+    # resuelve y presenta TODOS los candidatos plausibles por separado. El
+    # caso de 1 solo candidato (match exacto, el más común) se comporta
+    # igual que antes -- ver `_build_user_prompt`.
+    substance_candidates: list[SubstanceCandidate]
+    # True si `resolve_substance_candidates` encontró más candidatos que
+    # MAX_CANDIDATES_SHOWN -- el Nodo 4 lo anuncia explícitamente en la
+    # respuesta (nunca en silencio), ver `_build_user_prompt`.
+    candidates_truncated: bool
+    # Sustituye a `structured_result: OpinionReference | None` -- una
+    # entrada por `substance_uuid` de `substance_candidates`, ver
+    # `verify_currency_node`.
+    structured_results: dict[str, OpinionReference | None]
     retrieved_chunks: list[RetrievedChunk]
-    # RESERVADO, SIN EFECTO TODAVÍA -- no lo trates como protección real.
-    # (1) Ningún nodo ni graph/build.py lo lee -- verificado, cero
-    #     consumidores (sesión 18-ago-2026). Puesto por verify_currency_node
-    #     y ahí se queda.
-    # (2) Ni siquiera mide lo que su nombre sugiere: hoy es literalmente
-    #     `result is None` (ningún candidato 'EFSA opinion' encontrado),
-    #     NO "varios candidatos con fechas próximas sin que el título
-    #     aclare cuál sustituye a cuál" (la ambigüedad real que describe
-    #     current_reference_value_opinion en su propio docstring, pendiente
-    #     #6 de CLAUDE.md). Ese caso hoy se resuelve en silencio por
-    #     MAX(fecha) sin ninguna señal hacia el llamador.
-    # No lo borres sin revisar el pendiente #6 primero -- es el punto de
-    # extensión ya reservado para cuando se implemente la detección real.
-    vigencia_ambigua: bool
+    # Sustituye a `vigencia_ambigua: bool` (global, ya documentado como
+    # reservado/sin consumidor) -- mismo cálculo (`result is None`) que
+    # antes, ahora por candidato en vez de global. Sigue sin consumidor
+    # aguas abajo -- punto de extensión reservado para el pendiente #6 de
+    # CLAUDE.md (detección real de ambigüedad de vigencia, DIFERIDA, no
+    # confundir con la ambigüedad de RESOLUCIÓN DE NOMBRE que sí se
+    # implementa en esta sesión).
+    currency_verification_incomplete: dict[str, bool]
     answer: str
-    citation: str | None
 
 
 @dataclass
@@ -182,13 +197,14 @@ class NodeDependencies:
 # Salida en una sola línea, sin JSON/tool-calling -- LLMClient.complete()
 # no expone eso (ver graph/llm_client.py), y no hace falta más
 # estructura que un nombre. El nombre debe ser el CANÓNICO EN INGLÉS
-# porque `OpenFoodToxStore.substance_uuid_by_name` exige coincidencia
-# EXACTA contra `SUB.ChemicalName` -- limitación conocida, NO resuelta
-# aquí (ver CLAUDE.md, pendiente #2): si el LLM normaliza a un nombre
-# razonable pero que no coincide carácter a carácter con el de SUB
-# (ej. nombres compuestos como "Tartaric acid (L(+)-)"), la resolución
-# falla y `substance_uuid` queda en None -- comportamiento esperado,
-# no un bug de este nodo.
+# porque `OpenFoodToxStore.resolve_substance_candidates` busca primero
+# coincidencia EXACTA contra `SUB.ChemicalName` (con normalización de
+# guion/espacio y fallback fuzzy si eso falla, ver ese método y CLAUDE.md,
+# diseño de resolución multi-candidato, sesión 19-ago-2026) -- si el LLM
+# propone un nombre irreconocible incluso para el fuzzy (ej. nombres
+# compuestos exóticos como "Tartaric acid (L(+)-)"), la resolución puede
+# seguir sin encontrar ningún candidato -- comportamiento esperado, no un
+# bug de este nodo.
 NODE_1_ENTITY_EXTRACTION_PROMPT = """\
 Identificas de qué aditivo alimentario habla una pregunta de usuario, \
 para un sistema que después consulta una base de datos regulatoria \
@@ -217,18 +233,22 @@ Reglas:
 def extract_entity_node(state: GraphState, deps: NodeDependencies) -> GraphState:
     """Identifica qué aditivo pregunta el usuario -- llamada real al LLM
     (`NODE_1_ENTITY_EXTRACTION_PROMPT`) para normalizar la pregunta a un
-    nombre químico canónico en inglés, más resolución determinista
-    contra OpenFoodTox (`OpenFoodToxStore.substance_uuid_by_name`, la
-    MISMA función ya probada en otros nodos -- coincidencia exacta, no
-    fuzzy, limitación conocida sin resolver aquí).
+    nombre químico canónico en inglés, más resolución determinista contra
+    OpenFoodTox (`OpenFoodToxStore.resolve_substance_candidates` --
+    exacto, exacto normalizado por guion/espacio, y fuzzy como último
+    recurso, ver ese método y CLAUDE.md).
 
-    Si el LLM responde "NONE", o el nombre no resuelve a un UUID exacto
-    en `SUB`, `substance_uuid` queda en `None` -- el resto del grafo ya
-    maneja ese caso (Nodo 2: `retrieved_chunks` vacío sin llamar a
-    Chroma; Nodo 3: espera un `substance_uuid` no nulo y lanza
-    `ValueError` si se le llama sin él -- decidir SI llamarlo en ese
-    caso es responsabilidad de la orquestación del grafo, no de este
-    nodo).
+    Si el LLM responde "NONE", o el nombre no resuelve a NINGÚN candidato,
+    `substance_candidates` queda vacío -- el resto del grafo ya maneja ese
+    caso (Nodo 2: `retrieved_chunks` vacío sin llamar a Chroma; Nodo 3:
+    espera al menos un candidato y lanza `ValueError` si se le llama sin
+    ninguno -- decidir SI llamarlo en ese caso es responsabilidad de la
+    orquestación del grafo, no de este nodo).
+
+    Si hay más candidatos de los que `MAX_CANDIDATES_SHOWN` permite
+    mostrar, se recorta a los de mayor `match_score` (la lista ya viene
+    ordenada por `_candidate_sort_key`) y se marca `candidates_truncated`
+    -- el Nodo 4 lo anuncia explícitamente, nunca en silencio.
     """
     if deps.llm_client is None:
         raise ValueError("Nodo 1 requiere un llm_client configurado en NodeDependencies")
@@ -243,9 +263,17 @@ def extract_entity_node(state: GraphState, deps: NodeDependencies) -> GraphState
     raw_name = response.text.strip().strip('"').strip("'").rstrip(".")
     substance_name = raw_name if raw_name and raw_name.upper() != "NONE" else None
 
-    substance_uuid = deps.store.substance_uuid_by_name(substance_name) if substance_name else None
+    all_candidates = (
+        deps.store.resolve_substance_candidates(substance_name) if substance_name else []
+    )
+    candidates = all_candidates[:MAX_CANDIDATES_SHOWN]
 
-    return {**state, "substance_name": substance_name, "substance_uuid": substance_uuid}
+    return {
+        **state,
+        "substance_name": substance_name,
+        "substance_candidates": candidates,
+        "candidates_truncated": len(all_candidates) > MAX_CANDIDATES_SHOWN,
+    }
 
 
 # --------------------------------------------------------------------- #
@@ -262,26 +290,56 @@ DEFAULT_RETRIEVAL_K = 5
 # Se fija en 5 (no 3) porque el presupuesto seguía siendo razonable
 # incluso en el extremo superior, y más contexto real reduce el riesgo
 # de que el Nodo 4 tenga que degradar a solo metadatos por falta de
-# fragmentos relevantes.
+# fragmentos relevantes. Actúa como TECHO por candidato -- ver
+# `_chunk_budget_per_candidate` para el reparto cuando hay 2+ candidatos.
+
+# Presupuesto total y suelo mínimo cuando `substance_candidates` tiene más
+# de un elemento (sesión 19-ago-2026, ver CLAUDE.md, diseño de resolución
+# multi-candidato) -- decisión explícita del usuario: reparto con dos
+# topes, NUNCA diluir un candidato por debajo de un k útil.
+TOTAL_CHUNK_BUDGET = 15  # mismo orden de magnitud que k=5 * 3 candidatos
+MIN_K_PER_CANDIDATE = 3  # nunca menos que esto por candidato mostrado
+
+
+def _chunk_budget_per_candidate(n_candidates: int) -> int:
+    """`k` por candidato cuando hay `n_candidates` sustancias a resolver
+    a la vez. Con 1 candidato da `DEFAULT_RETRIEVAL_K` (comportamiento
+    idéntico al de antes de esta sesión, sin regresión). El presupuesto
+    total (`TOTAL_CHUNK_BUDGET`) se reparte entre los candidatos SIN bajar
+    nunca de `MIN_K_PER_CANDIDATE` -- si el reparto matemático daría
+    menos, es `MAX_CANDIDATES_SHOWN` (en `extract_entity_node`) quien ya
+    acotó cuántos candidatos llegan aquí, no esta función la que diluye
+    la calidad por debajo del suelo útil.
+    """
+    return min(DEFAULT_RETRIEVAL_K, max(MIN_K_PER_CANDIDATE, TOTAL_CHUNK_BUDGET // n_candidates))
 
 
 def hybrid_retrieval_node(state: GraphState, deps: NodeDependencies) -> GraphState:
-    """Búsqueda semántica en Chroma, filtrada por `substance_uuid`, con
-    la pregunta del usuario como query.
+    """Búsqueda semántica en Chroma, filtrada por `substance_uuid` de CADA
+    candidato de `substance_candidates`, con la pregunta del usuario como
+    query (embedida una sola vez, reutilizada en todas las consultas).
 
     Solo usa `substance_uuid` (ya resuelto por el Nodo 1) como filtro --
     es el único campo por el que el esquema de metadatos de Chroma
     permite un filtro exacto y fiable (ver CLAUDE.md, "Hallazgos
     verificados", ESQUEMA FINAL: no hay `e_number` en los metadatos, y
     `substance_name` es texto libre del usuario, no una clave de
-    filtrado). Si el Nodo 1 no resolvió un UUID (`state["substance_uuid"]`
-    es `None` -- puede que sí haya `substance_name`, ej. el nombre tal
-    como lo escribió el usuario, pero sin UUID no hay filtro fiable
-    posible), NO se llama a Chroma en absoluto -- una búsqueda sin
-    filtro de sustancia devolvería fragmentos de CUALQUIER dictamen del
-    corpus, mezclando contexto no relacionado con la pregunta. Se deja
-    `retrieved_chunks` vacío y el Nodo 4 ya degrada con gracia a ese
-    caso (`_format_retrieved_chunks`).
+    filtrado). Si el Nodo 1 no resolvió ningún candidato
+    (`substance_candidates` vacío -- puede que sí haya `substance_name`,
+    ej. el nombre tal como lo escribió el usuario, pero sin ningún UUID
+    no hay filtro fiable posible), NO se llama a Chroma en absoluto -- una
+    búsqueda sin filtro de sustancia devolvería fragmentos de CUALQUIER
+    dictamen del corpus, mezclando contexto no relacionado con la
+    pregunta. Se deja `retrieved_chunks` vacío y el Nodo 4 ya degrada con
+    gracia a ese caso (`_format_retrieved_chunks`).
+
+    Con 2+ candidatos, el `k` por consulta se reduce vía
+    `_chunk_budget_per_candidate` para acotar el presupuesto total del
+    prompt del Nodo 4 -- `retrieved_chunks` sigue siendo una lista PLANA
+    (concatenación de los resultados de todos los candidatos): cada
+    `RetrievedChunk` ya lleva su propio `substance_uuid`/`chemical_name`,
+    así que el Nodo 4 puede agrupar por candidato al formatear sin que
+    haga falta anidar la estructura aquí.
 
     `substance_resolution_tier` (y el resto de campos de
     `RetrievedChunk`) se copian TAL CUAL de los metadatos ya escritos
@@ -289,8 +347,8 @@ def hybrid_retrieval_node(state: GraphState, deps: NodeDependencies) -> GraphSta
     re-derivan aquí. La resolución de tier ocurrió una sola vez, al
     construir el índice.
     """
-    substance_uuid = state.get("substance_uuid")
-    if not substance_uuid:
+    candidates = state.get("substance_candidates") or []
+    if not candidates:
         return {**state, "retrieved_chunks": []}
 
     if deps.vectorstore is None or deps.embedding_model is None:
@@ -302,29 +360,32 @@ def hybrid_retrieval_node(state: GraphState, deps: NodeDependencies) -> GraphSta
         query_embedding.tolist() if hasattr(query_embedding, "tolist") else list(query_embedding)
     )
 
-    result = deps.vectorstore.query(
-        query_embeddings=[query_embedding_list],
-        where={"substance_uuid": substance_uuid},
-        n_results=DEFAULT_RETRIEVAL_K,
-    )
-
-    documents = result.get("documents") or [[]]
-    metadatas = result.get("metadatas") or [[]]
-
-    retrieved_chunks = [
-        RetrievedChunk(
-            text=text,
-            substance_uuid=meta["substance_uuid"],
-            chemical_name=meta["chemical_name"],
-            dossier_uuid=meta["dossier_uuid"],
-            dossier_title=meta["dossier_title"],
-            substance_resolution_tier=meta["substance_resolution_tier"],
-            doi=meta.get("doi"),
-            section_heading=meta.get("section_heading"),
-            page_number=meta.get("page_number"),
+    k = _chunk_budget_per_candidate(len(candidates))
+    retrieved_chunks: list[RetrievedChunk] = []
+    for candidate in candidates:
+        result = deps.vectorstore.query(
+            query_embeddings=[query_embedding_list],
+            where={"substance_uuid": candidate.substance_uuid},
+            n_results=k,
         )
-        for text, meta in zip(documents[0], metadatas[0])
-    ]
+
+        documents = result.get("documents") or [[]]
+        metadatas = result.get("metadatas") or [[]]
+
+        retrieved_chunks.extend(
+            RetrievedChunk(
+                text=text,
+                substance_uuid=meta["substance_uuid"],
+                chemical_name=meta["chemical_name"],
+                dossier_uuid=meta["dossier_uuid"],
+                dossier_title=meta["dossier_title"],
+                substance_resolution_tier=meta["substance_resolution_tier"],
+                doi=meta.get("doi"),
+                section_heading=meta.get("section_heading"),
+                page_number=meta.get("page_number"),
+            )
+            for text, meta in zip(documents[0], metadatas[0])
+        )
 
     return {**state, "retrieved_chunks": retrieved_chunks}
 
@@ -337,32 +398,46 @@ def verify_currency_node(state: GraphState, deps: NodeDependencies) -> GraphStat
     """Determinista (ver ingestion/openfoodtox.py::
     current_reference_value_opinion, verificado con aspartamo) --
     MAX(fecha) entre los candidatos 'EFSA opinion' que pasan los
-    filtros de dominio/regulación, sin ningún chequeo de ambigüedad.
+    filtros de dominio/regulación, sin ningún chequeo de ambigüedad de
+    VIGENCIA (pendiente #6 de CLAUDE.md, diferido, no confundir con la
+    ambigüedad de RESOLUCIÓN DE NOMBRE que sí resuelve el Nodo 1 con
+    `substance_candidates`).
 
-    NO hay todavía ningún fallback a LLM ni detección real de
-    ambigüedad (varias 'EFSA opinion' con fechas muy próximas, título
-    no concluyente) -- pendiente #6 de CLAUDE.md, diagnóstico de
-    prevalencia en curso (sesión 18-ago-2026), sin implementar. Si
-    `current_reference_value_opinion` encuentra 2+ candidatos así, hoy
-    devuelve el de fecha más reciente en silencio, sin ninguna señal
-    hacia el llamador -- ver `vigencia_ambigua` más abajo, que NO cubre
-    este caso pese al nombre.
+    Se llama UNA VEZ por cada candidato en `substance_candidates` -- con
+    1 solo candidato (el caso común) el comportamiento es idéntico al de
+    antes de esta sesión. `structured_results` es un dict `{substance_uuid:
+    OpinionReference | None}`, no un único resultado.
+
+    NO hay todavía ningún fallback a LLM ni detección real de ambigüedad
+    de vigencia por sustancia (varias 'EFSA opinion' con fechas muy
+    próximas, título no concluyente) -- si
+    `current_reference_value_opinion` encuentra 2+ candidatos así para
+    una misma sustancia, hoy devuelve el de fecha más reciente en
+    silencio, sin ninguna señal hacia el llamador -- ver
+    `currency_verification_incomplete` más abajo, que NO cubre este caso
+    pese al nombre.
     """
-    substance_uuid = state.get("substance_uuid")
-    if not substance_uuid:
-        raise ValueError("Nodo 3 requiere substance_uuid ya resuelto por el Nodo 1")
+    candidates = state.get("substance_candidates") or []
+    if not candidates:
+        raise ValueError("Nodo 3 requiere al menos un candidato en substance_candidates")
 
-    result = deps.store.current_reference_value_opinion(substance_uuid)
-    new_state: GraphState = {**state, "structured_result": result}
+    structured_results: dict[str, OpinionReference | None] = {}
+    currency_verification_incomplete: dict[str, bool] = {}
+    for candidate in candidates:
+        result = deps.store.current_reference_value_opinion(candidate.substance_uuid)
+        structured_results[candidate.substance_uuid] = result
+        # RESERVADO, SIN EFECTO -- ver el comentario largo junto al campo
+        # en GraphState. Esto es "no se encontró ningún candidato de
+        # dictamen", NO "había varios candidatos y no estaba claro cuál
+        # elegir" -- son casos distintos, y este campo solo cubre el
+        # primero. Nadie lo lee aguas abajo todavía.
+        currency_verification_incomplete[candidate.substance_uuid] = result is None
 
-    # RESERVADO, SIN EFECTO -- ver el comentario largo junto al campo en
-    # GraphState. Esto es "no se encontró ningún candidato", NO "había
-    # varios candidatos y no estaba claro cuál elegir" -- son casos
-    # distintos, y este campo solo cubre el primero. Nadie lo lee aguas
-    # abajo todavía.
-    new_state["vigencia_ambigua"] = result is None
-
-    return new_state
+    return {
+        **state,
+        "structured_results": structured_results,
+        "currency_verification_incomplete": currency_verification_incomplete,
+    }
 
 
 # --------------------------------------------------------------------- #
@@ -497,14 +572,42 @@ def _format_retrieved_chunks(
     return "\n\n".join(parts)
 
 
+def _chunks_for_substance(chunks: list[RetrievedChunk] | None, substance_uuid: str) -> list[RetrievedChunk]:
+    if not chunks:
+        return []
+    return [c for c in chunks if c.substance_uuid == substance_uuid]
+
+
 def _build_user_prompt(state: GraphState) -> str:
+    """Construye el prompt de usuario del Nodo 4.
+
+    Caso de 0 o 1 candidato: EXACTAMENTE el mismo formato que antes de la
+    sesión 19-ago-2026 (resolución multi-candidato) -- sin envoltorio de
+    "candidato 1 de 1", para no regresar el comportamiento ya probado
+    contra la API real (caso aspartamo, Shellac).
+
+    Caso de 2+ candidatos: decisión de producto explícita del usuario --
+    nunca se elige uno en silencio, se presentan TODOS por separado, con
+    una instrucción incrustada en el propio prompt de usuario (mismo
+    patrón que el aviso de tier 3 ya existente, NO una regla nueva de
+    NODE_4_GROUNDING_RULES/NODE_4_SAFETY_COMMUNICATION_RULES) pidiendo al
+    LLM que no las fusione ni asuma cuál buscaba el usuario, y anunciando
+    explícitamente si `candidates_truncated` es True.
+    """
     query = state.get("user_query", "")
     substance = state.get("substance_name") or "(no identificada explícitamente)"
-    structured_result = state.get("structured_result")
-    structured = _format_structured_result(structured_result)
-    chunks = _format_retrieved_chunks(state.get("retrieved_chunks"), structured_result)
+    candidates = state.get("substance_candidates") or []
+    structured_results = state.get("structured_results") or {}
+    all_chunks = state.get("retrieved_chunks")
 
-    return f"""\
+    if len(candidates) <= 1:
+        structured_result = (
+            structured_results.get(candidates[0].substance_uuid) if candidates else None
+        )
+        structured = _format_structured_result(structured_result)
+        chunks = _format_retrieved_chunks(all_chunks, structured_result)
+
+        return f"""\
 Pregunta del usuario: {query}
 
 Sustancia identificada: {substance}
@@ -518,6 +621,48 @@ CONTEXTO -- fragmentos narrativos recuperados del dictamen (fuente: PDFs indexad
 Responde a la pregunta del usuario usando solo el CONTEXTO anterior, \
 siguiendo las reglas de fundamentación y de comunicación de riesgo del \
 system prompt."""
+
+    truncation_note = ""
+    if state.get("candidates_truncated"):
+        truncation_note = (
+            f" Hay más de {MAX_CANDIDATES_SHOWN} sustancias con nombres "
+            f"parecidos a \"{substance}\"; se muestran las "
+            f"{MAX_CANDIDATES_SHOWN} más probables por similitud -- dilo "
+            "explícitamente en la respuesta, no lo omitas."
+        )
+
+    blocks = []
+    for i, candidate in enumerate(candidates):
+        structured_result = structured_results.get(candidate.substance_uuid)
+        structured = _format_structured_result(structured_result)
+        chunks = _format_retrieved_chunks(
+            _chunks_for_substance(all_chunks, candidate.substance_uuid), structured_result
+        )
+        blocks.append(
+            f"=== Candidato {i + 1}: {candidate.chemical_name} "
+            f"(similitud de nombre: {candidate.match_type}, "
+            f"score {candidate.match_score:.1f}) ===\n"
+            f"CONTEXTO -- dictamen vigente (fuente: OpenFoodTox, consulta determinista):\n"
+            f"{structured}\n\n"
+            f"CONTEXTO -- fragmentos narrativos recuperados del dictamen (fuente: PDFs indexados):\n"
+            f"{chunks}"
+        )
+    candidates_block = "\n\n".join(blocks)
+
+    return f"""\
+Pregunta del usuario: {query}
+
+Se han identificado {len(candidates)} sustancias con nombres parecidos a \
+"{substance}" en la base de datos regulatoria -- ninguna se ha elegido \
+por ti. Preséntalas TODAS por separado en tu respuesta, indicando \
+claramente a cuál corresponde cada bloque de información, sin fusionarlas \
+ni asumir cuál buscaba el usuario.{truncation_note}
+
+{candidates_block}
+
+Responde a la pregunta del usuario usando solo el CONTEXTO anterior de \
+cada candidato, siguiendo las reglas de fundamentación y de comunicación \
+de riesgo del system prompt."""
 
 
 NODE_4_MAX_TOKENS = 2000
@@ -539,11 +684,13 @@ def generate_answer_node(state: GraphState, deps: NodeDependencies) -> GraphStat
 
     El system prompt es NODE_4_SYSTEM_PROMPT (reglas de fundamentación +
     NODE_4_SAFETY_COMMUNICATION_RULES, esta última fijada por diseño, ver
-    CLAUDE.md). El prompt de usuario combina structured_result (Nodo 3,
-    siempre disponible si hay dictamen vigente) y retrieved_chunks (Nodo 2,
-    puede venir vacío mientras no exista vector store -- el prompt está
-    diseñado para degradar con gracia a solo metadatos en ese caso, no
-    para fallar ni para que el LLM rellene el hueco inventando contenido).
+    CLAUDE.md). El prompt de usuario combina structured_results (Nodo 3,
+    uno por candidato de substance_candidates) y retrieved_chunks (Nodo 2,
+    puede venir vacío mientras no haya ningún candidato resuelto -- el
+    prompt está diseñado para degradar con gracia a solo metadatos en ese
+    caso, no para fallar ni para que el LLM rellene el hueco inventando
+    contenido). Con 2+ candidatos, `_build_user_prompt` presenta cada uno
+    por separado -- ver ese docstring para el diseño completo.
 
     Comprobación de truncamiento (sesión 18-ago-2026, ver CLAUDE.md):
     si `finish_reason == 'length'`, la respuesta NUNCA se devuelve tal
@@ -574,7 +721,4 @@ def generate_answer_node(state: GraphState, deps: NodeDependencies) -> GraphStat
     if response.finish_reason == "length":
         answer_text += "\n\n[respuesta incompleta por límite de longitud]"
 
-    structured = state.get("structured_result")
-    citation = (structured.doi or structured.title) if structured else None
-
-    return {**state, "answer": answer_text, "citation": citation}
+    return {**state, "answer": answer_text}

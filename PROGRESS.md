@@ -4119,3 +4119,169 @@ sin fix nuevo. Suite completa re-confirmada por higiene: **31 passed,
 - Sigue sin implementarse el fallback de resolución del Nodo 1 -- dos
   casos reales documentados ahora (tocoferol, E150a), ninguno usado
   todavía para diseñar la solución estructural.
+
+## 2026-08-19 (continuación 29) — resolución multi-candidato del Nodo 1 (fuzzy matching + presentación de varios candidatos, nunca elegir uno en silencio), hipótesis del símbolo griego de tocoferol probada y descartada, MCP deliberadamente fuera de alcance
+
+Implementa el fallback de resolución del Nodo 1 que las continuaciones
+25/28 dejaron pendiente -- pero NO como "elegir el mejor candidato"
+(fallback de substring descartado en continuación 25 por riesgo de
+falso positivo silencioso), sino como una decisión de producto real del
+usuario: cuando hay varios nombres razonablemente parecidos en
+OpenFoodTox, el sistema nunca elige uno en silencio -- resuelve y
+presenta TODOS los candidatos plausibles por separado. Cambio de
+arquitectura real, no una función de matching aislada: toca
+`GraphState`, los 4 nodos y `graph/build.py`.
+
+**Investigación previa a implementar, con datos reales, tal como pidió
+el usuario en tres rondas de correcciones sucesivas:**
+
+1. **rapidfuzz confirmado disponible/instalable** -- no estaba en
+   `requirements.txt` (verificado con `grep`, `pip show`), `pip install
+   --dry-run` limpio sin conflicto con las versiones ya fijadas
+   (langchain/langgraph/torch pineados). Añadido `rapidfuzz>=3.14`.
+2. **Hipótesis del usuario sobre el símbolo griego (α/β/γ vs. palabra
+   escrita) para el caso tocoferol -- probada y DESCARTADA con datos
+   reales, no se implementó nada basado en ella.** `SUB.ChemicalName`
+   no tiene NINGUNA fila de tocoferol con símbolo griego Unicode (las 7
+   variantes reales usan palabra latina: `alpha`, `beta`, `Gamma`,
+   `Delta`; solo 14/7.871 filas de TODO el dataset usan símbolos
+   griegos, ninguna relevante). Causa real, verificada con 7 llamadas
+   reales al Nodo 1 (`extract_entity_node`): el LLM hyphena de forma
+   INCONSISTENTE según si la pregunta ya trae guion -- `"alpha
+   tocopherol"` (sin guion) -> `"Alpha tocopherol"` (sin guion, NO
+   resuelve) vs. `"α-tocopherol"`/`"alfa-tocoferol"` (con guion o
+   símbolo) -> siempre `"Alpha-tocopherol"` (con guion, SÍ resuelve).
+   Un simple fallback de normalización espacio<->guion como
+   coincidencia EXACTA adicional (sin fuzzy) recupera 2 de los 3
+   variantes de tocoferol que no resolvían (`Alpha-tocopherol`,
+   `beta-tocopherol`) con cero riesgo de ambigüedad nuevo.
+3. **Universo de fuzzy matching, calibrado antes de fijar el umbral --
+   no a ciegas.** Contra el `SUB.ChemicalName` completo (7.871 filas,
+   todos los dominios de OpenFoodTox) hay ruido real: consultas sin
+   relación llegan a ~48% de similitud con sustancias de pesticidas/
+   veterinaria. Restringido a las 246 sustancias con dictamen de
+   reevaluación resoluble (unión de
+   `substances_per_dossier(require_adi=False)` sobre
+   `current_reevaluation_corpus()`) -- decisión de ALCANCE confirmada
+   por el usuario ("coherente con el alcance del proyecto ya fijado en
+   README/disclaimer... mismo tipo de problema que el Grupo B de Sunset
+   Yellow FCF"), no solo optimización de ruido.
+4. **Umbral `FUZZY_MATCH_LOW_THRESHOLD = 60`** (rapidfuzz `fuzz.ratio`,
+   NO `WRatio` -- `WRatio` probado y descartado, falsos positivos
+   graves por coincidencia de substring: "Xylene" ->
+   "Perfluorobutylethylene" al 81,82%). Calibrado contra el universo
+   exacto de 246: `"Tocopherol"` (salida REAL del Nodo 1, verificado con
+   llamada real) da 4 candidatos sobre el umbral (69,23/69,23/62,07/
+   60,61), "Glycerol" (no relacionado) queda excluido a 55,56;
+   `"plai caramel"` da 3 candidatos (88,00/66,67/61,11) -- trade-off
+   conocido y aceptado (más candidatos de la misma familia que los
+   estrictamente necesarios para un typo claro, no un falso positivo
+   inventado); consultas sin relación real quedan en 46-57, por debajo
+   del umbral.
+
+**Tres rondas de correcciones del usuario durante el diseño (registradas
+para no repetir el error):**
+- 1ª: el diseño inicial (fuzzy matching para elegir UN candidato) se
+  corrigió a "resolver y presentar TODOS los candidatos razonables por
+  separado" -- cambio de arquitectura real, no una función aislada.
+- 2ª: verificar la hipótesis del símbolo griego con datos ANTES de
+  diseñar el umbral -- resultado: hipótesis falsa, causa real distinta
+  (inconsistencia de guion del LLM), fix de normalización más barato y
+  sin riesgo aplicado aparte.
+- 3ª: presupuesto de `retrieved_chunks` con reparto fijo (opción
+  rechazada por riesgo de coste sin límite con muchos candidatos) NI
+  tope simple de candidatos con k fijo (opción rechazada por poder
+  diluir la calidad) -- exigió las DOS condiciones a la vez: tope
+  máximo de candidatos mostrados (nunca en silencio si se recorta) MÁS
+  suelo mínimo de k por candidato (nunca diluir por debajo de un k
+  útil), con una regla de desempate determinista añadida después al
+  descubrir que "candidato de mayor match_score" era ambiguo con
+  empates reales (Delta/Gamma-tocopherol, ambos 69,23).
+
+**Diseño final, aprobado en Plan mode antes de tocar código de
+producción** (`~/.claude/plans/jolly-coalescing-trinket.md`):
+- `OpenFoodToxStore.resolve_substance_candidates(name) ->
+  list[SubstanceCandidate]` (`ingestion/openfoodtox.py`) -- 3
+  escalones (exacto -> exacto normalizado por guion/espacio -> fuzzy
+  restringido), el primero que produzca resultado(s) gana. Ordenado
+  siempre con `_candidate_sort_key` (`(-match_score,
+  chemical_name.lower())`) para que `candidates[0]` sea determinista
+  incluso con empate exacto de score. De paso corrige un bug latente
+  real encontrado en esta sesión: `SUB.ChemicalName` tiene 9 nombres
+  duplicados con distinto UUID (`"Sodium saccharin"` x2, dentro del
+  universo de 246) -- `substance_uuid_by_name` (sin cambios, sigue
+  usándose como atajo de test) solo devolvía `matches.iloc[0]`;
+  `resolve_substance_candidates` devuelve TODOS.
+- `GraphState`: `substance_uuid` -> `substance_candidates` (+
+  `candidates_truncated: bool`); `structured_result` ->
+  `structured_results: dict[str, OpinionReference | None]`;
+  `vigencia_ambigua` -> `currency_verification_incomplete: dict[str,
+  bool]` (mismo cálculo, por candidato); `citation` ELIMINADO
+  (verificado sin consumidor real, estado muerto).
+- Nodo 1: llama a `resolve_substance_candidates`, recorta a
+  `MAX_CANDIDATES_SHOWN = 5` y marca `candidates_truncated` si había
+  más.
+- Nodo 2: presupuesto repartido con `TOTAL_CHUNK_BUDGET = 15`,
+  `MIN_K_PER_CANDIDATE = 3`, `k_por_candidato = min(5, max(3, 15 //
+  N_mostrados))` -- con 1 candidato da k=5, idéntico a antes de esta
+  sesión. Consulta Chroma una vez por candidato, mismo query embedding
+  reutilizado; `retrieved_chunks` sigue siendo lista PLANA (cada
+  `RetrievedChunk` ya lleva su propio `substance_uuid`).
+- Nodo 3: itera candidatos, construye `structured_results` como dict.
+- Nodo 4 (`_build_user_prompt`): con 0-1 candidato, formato IDÉNTICO al
+  de antes de esta sesión (sin envoltorio "candidato 1 de 1") -- sin
+  regresión del comportamiento ya probado (aspartamo, Shellac). Con 2+,
+  bloque `=== Candidato N: {nombre} ===` por cada uno, instrucción
+  incrustada en el prompt de usuario (mismo patrón que el aviso de tier
+  3 ya existente) pidiendo no fusionar ni asumir cuál buscaba el
+  usuario, y anuncio explícito si `candidates_truncated`.
+- `graph/build.py`: `_route_after_retrieval` usa `substance_candidates`
+  no vacío. `AnswerResult` gana 2 campos ADITIVOS con default
+  (`substance_candidates`, `structured_results`), los 4 originales sin
+  cambiar de tipo/posición. `answer_question`/`resolve_current_opinion`
+  usan `candidates[0]` (orden determinista) para `structured_result`
+  singular -- MCP no ve ningún cambio de contrato.
+- **MCP (`mcp/server.py`) deliberadamente FUERA de este cambio** --
+  decisión explícita del usuario, no una omisión: sigue devolviendo un
+  único resultado, sin rediseño de esquema. Verificado real
+  (`get_reevaluation_status("aspartame")` vía `asyncio.run(server.call_tool(...))`,
+  no mockeado): JSON de salida sin cambios de forma. **Los 6 tests de
+  `tests/test_mcp_server.py` pasan SIN haberse tocado ni una línea**
+  (`git diff --stat` limpio) -- cumple la condición explícita del
+  usuario de que cualquier rotura ahí sería señal de acoplamiento no
+  detectado, no pasó.
+
+**Verificación real, no solo tests:**
+- `resolve_substance_candidates("plai caramel")` -> `Plain caramel`
+  como candidato top, tal como calibrado.
+- `answer_question("What is the ADI of aspartame...")` -- 1 candidato,
+  respuesta idéntica en estructura a sesiones anteriores.
+- `answer_question("Is tocopherol safe as a food additive?")` -- 4
+  candidatos (Delta/Gamma/DL-alpha/Tocopherol-rich extract, orden
+  determinista con Delta primero), los 4 presentados por separado en la
+  respuesta real de la API, sin fusionar ADI/discusión entre ellos, sin
+  violar la restricción no negociable #1 (ningún candidato sin ADI se
+  describe como "no seguro" ni se sugiere un umbral).
+- `resolve_current_opinion` con el mismo caso de tocoferol -- confirma
+  que toma el candidato top determinista (Delta-tocopherol), no
+  Gamma-tocopherol pese al empate de score.
+
+**Tests: 8 nuevos en `tests/test_openfoodtox_joins.py`** (exacto sin
+cambios, normalización guion/espacio, typo fuzzy, tocoferol
+multi-candidato, desempate determinista repetido 3 veces, consultas sin
+relación, duplicado Sodium saccharin) **+ reescritura de los tests de
+`hybrid_retrieval_node`/`extract_entity_node` en `test_nodes.py`** para
+la nueva forma de estado, **+ 3 tests nuevos de `_build_user_prompt`**
+(formato single-candidato sin regresión, presentación separada con 2+,
+anuncio de truncamiento). Suite completa: **42 passed, 2 skipped** (los
+2 skips son los mismos de siempre, por xlsx/Chroma no versionados).
+
+**Pendiente, documentado explícitamente en CLAUDE.md, no una omisión:**
+- MCP (`mcp/server.py`) sigue con contrato de un único resultado --
+  diseño de esquema multi-resultado dedicado queda para una sesión
+  aparte, si se decide hacerlo.
+- El umbral `FUZZY_MATCH_LOW_THRESHOLD = 60` es una constante nombrada,
+  fácil de re-tunear -- calibrado contra los casos reales disponibles
+  hoy (tocoferol, caramelo, E150a), no contra una batería exhaustiva.
+  Si aparecen más casos reales de typo/nombre genérico en producción,
+  revisar con esos datos antes de mover el número a ciegas.

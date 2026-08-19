@@ -17,8 +17,10 @@ import functools
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
+from rapidfuzz import fuzz, process
 
 # Filtro de corpus verificado: filtrar solo por Domain.Regulation infravalora
 # el corpus real (62 filas vs. 278 reales) porque la mayoría de reevaluaciones
@@ -281,6 +283,80 @@ class DossierSubstance:
 
     substance_uuid: str
     chemical_name: str
+
+
+# Umbral mínimo de admisión para el tier fuzzy de
+# OpenFoodToxStore.resolve_substance_candidates (rapidfuzz fuzz.ratio, NO
+# WRatio -- WRatio probado y descartado, da falsos positivos graves por
+# coincidencia de substring, ej. "Xylene" -> "Perfluorobutylethylene" al
+# 81,82% frente a ningún candidato con ratio). Calibrado con datos reales
+# contra el universo restringido de 246 sustancias resolubles (sesión
+# 19-ago-2026):
+#   - "Tocopherol" (salida REAL del Nodo 1 para preguntas genéricas de
+#     tocoferol, verificado con llamada real a la API): 69,23
+#     Delta-tocopherol, 69,23 Gamma-tocopherol, 62,07 DL-alpha-tocopherol,
+#     60,61 Tocopherol-rich extract -- los 4 caen sobre el umbral; 55,56
+#     Glycerol (sustancia real no relacionada) queda excluido.
+#   - "plai caramel" (typo real): 88,00 Plain caramel, 66,67 Ammonia
+#     caramel, 61,11 Sulphite ammonia caramel -- los 3 caen sobre el
+#     umbral. Trade-off conocido y aceptado, no oculto: para un typo claro
+#     de una sola sustancia, este umbral también incluye sustancias
+#     reales de la misma familia (otros caramelos) -- no es un falso
+#     positivo inventado, son sustancias reales del corpus, pero sí más
+#     candidatos de los estrictamente necesarios. No se persigue un
+#     umbral "perfecto" sin más señal que un ratio de caracteres.
+#   - Consultas sin relación real ("quantum flux capacitor", "banana
+#     smoothie recipe", "Xylene"): máximo 46-57 sobre el universo
+#     restringido -- ninguna cruza el umbral. Cero falsos positivos
+#     verificados en estos casos.
+FUZZY_MATCH_LOW_THRESHOLD = 60
+
+# Tope de candidatos que se muestran al usuario y de cuántos participan en
+# el reparto de presupuesto de retrieved_chunks -- ver
+# graph/nodes.py::hybrid_retrieval_node. 5 no es arbitrario: encaja exacto
+# con TOTAL_CHUNK_BUDGET // MIN_K_PER_CANDIDATE (15 // 3) definidos ahí, así
+# que los dos topes no entran en conflicto entre sí.
+MAX_CANDIDATES_SHOWN = 5
+
+
+def _candidate_sort_key(candidate: "SubstanceCandidate") -> tuple[float, str]:
+    """Orden determinista de candidatos: `match_score` descendente, nombre
+    químico ascendente (alfabético, case-insensitive) como desempate.
+
+    Un empate exacto de score es real, no hipotético -- verificado en la
+    calibración de arriba: "Tocopherol" da Delta-tocopherol y
+    Gamma-tocopherol ambos a 69,23. Con este criterio, "Delta-tocopherol"
+    ordena antes que "Gamma-tocopherol" ("d" < "g"), así que
+    `candidates[0]` (el "candidato top" que usan `resolve_current_opinion`
+    y el `structured_result` singular de `AnswerResult`, ver graph/build.py)
+    es siempre el mismo en ejecuciones repetidas con los mismos datos.
+    """
+    return (-candidate.match_score, candidate.chemical_name.lower())
+
+
+@dataclass(frozen=True)
+class SubstanceCandidate:
+    """Un candidato de resolución de nombre de sustancia -- salida de
+    OpenFoodToxStore.resolve_substance_candidates(). Sustituye a un único
+    `str | None` (ver `substance_uuid_by_name`, que sigue existiendo sin
+    cambios para los sitios que solo necesitan un atajo determinista de
+    test) porque el Nodo 1 del grafo (`extract_entity_node`) necesita
+    poder resolver VARIOS candidatos razonables a la vez y presentarlos
+    todos, en vez de elegir uno en silencio -- ver CLAUDE.md, diseño de
+    resolución multi-candidato.
+    """
+
+    substance_uuid: str
+    chemical_name: str
+    # "exact": coincidencia case-insensitive literal contra SUB.ChemicalName.
+    # "exact_normalized": coincidencia exacta tras normalizar espacio<->guion
+    #   (ver el diagnóstico de tocoferol en CLAUDE.md -- el LLM del Nodo 1
+    #   hyphena de forma inconsistente, NO es un problema de símbolo griego
+    #   vs. palabra, esa hipótesis se probó y se descartó con datos reales).
+    # "fuzzy": rapidfuzz fuzz.ratio >= FUZZY_MATCH_LOW_THRESHOLD contra el
+    #   universo restringido de sustancias resolubles.
+    match_type: Literal["exact", "exact_normalized", "fuzzy"]
+    match_score: float
 
 
 class OpenFoodToxStore:
@@ -630,12 +706,105 @@ class OpenFoodToxStore:
     # ------------------------------------------------------------------ #
 
     def substance_uuid_by_name(self, chemical_name: str) -> str | None:
-        matches = self.sub[
-            self.sub["ChemicalName"].str.lower() == chemical_name.lower()
-        ]
-        if matches.empty:
+        matches = self._exact_name_matches(chemical_name)
+        if not matches:
             return None
-        return matches.iloc[0]["Document UUID"]
+        return matches[0][0]
+
+    def _exact_name_matches(self, name: str) -> list[tuple[str, str]]:
+        """Todas las filas de SUB cuyo ChemicalName coincide (case-insensitive)
+        con `name`, como (Document UUID, ChemicalName) -- no solo la primera.
+
+        Extraído de `substance_uuid_by_name` (sesión 19-ago-2026) al
+        descubrir un bug latente real: `SUB.ChemicalName` tiene 9 nombres
+        duplicados con distinto UUID (ej. "Sodium saccharin" x2, una de
+        ellas dentro del universo de 246 sustancias resolubles del corpus
+        de reevaluación) -- `matches.iloc[0]` descartaba la segunda en
+        silencio. `substance_uuid_by_name` mantiene su comportamiento
+        (devuelve solo la primera) para no romper los sitios de test que
+        ya lo usan como atajo determinista; `resolve_substance_candidates`
+        usa este helper para devolver TODAS.
+        """
+        matches = self.sub[self.sub["ChemicalName"].str.lower() == name.lower()]
+        if matches.empty:
+            return []
+        return list(zip(matches["Document UUID"], matches["ChemicalName"]))
+
+    @functools.cached_property
+    def _resolvable_substance_universe(self) -> dict[str, str]:
+        """`{chemical_name: substance_uuid}` para las sustancias con
+        dictamen de reevaluación resoluble -- unión de
+        `substances_per_dossier(require_adi=False)` sobre
+        `current_reevaluation_corpus()` (246 entradas, verificado sesión
+        19-ago-2026). Universo de búsqueda del tier fuzzy de
+        `resolve_substance_candidates` -- NO el `SUB.ChemicalName`
+        completo (7.871 filas, todos los dominios regulatorios de
+        OpenFoodTox: pesticidas, veterinaria, contaminantes). Restringir
+        es una decisión de ALCANCE, no solo una optimización de ruido --
+        mismo tipo de contaminación cruzada de dominio que causó el bug
+        real de Sunset Yellow FCF (Grupo B, ver CLAUDE.md): verificado que
+        contra el universo completo, consultas sin relación real llegan a
+        ~48% de similitud con sustancias de otros programas regulatorios.
+        """
+        universe: dict[str, str] = {}
+        for substances in self.substances_per_dossier(require_adi=False).values():
+            for s in substances:
+                universe[s.chemical_name] = s.substance_uuid
+        return universe
+
+    def resolve_substance_candidates(self, name: str) -> list[SubstanceCandidate]:
+        """Resuelve `name` (normalmente el nombre canónico en inglés que
+        propone el Nodo 1, `extract_entity_node`) a TODOS los candidatos
+        razonables, en vez de a un único UUID -- ver CLAUDE.md, diseño de
+        resolución multi-candidato, y el docstring de `SubstanceCandidate`.
+
+        Tres escalones, en orden, el primero que produzca resultado(s)
+        gana (no se combinan tiers distintos en la misma respuesta):
+        1. Exacto (case-insensitive) contra TODO `SUB.ChemicalName`.
+        2. Igual, pero probando `name` con espacio<->guion intercambiado --
+           recupera el caso de tocoferol diagnosticado en esta sesión (el
+           LLM del Nodo 1 hyphena de forma inconsistente; la hipótesis de
+           símbolo griego vs. palabra se probó y se descartó con datos
+           reales, ver CLAUDE.md). Sigue siendo coincidencia EXACTA, cero
+           riesgo de ambigüedad nuevo.
+        3. Fuzzy (`rapidfuzz.fuzz.ratio`) contra
+           `_resolvable_substance_universe`, admitiendo
+           `score >= FUZZY_MATCH_LOW_THRESHOLD`.
+
+        El resultado final siempre se ordena con `_candidate_sort_key`
+        antes de devolverse, para que `candidates[0]` sea determinista
+        incluso con empate exacto de score.
+        """
+        exact = self._exact_name_matches(name)
+        if exact:
+            candidates = [
+                SubstanceCandidate(uuid, chemical_name, "exact", 100.0)
+                for uuid, chemical_name in exact
+            ]
+            candidates.sort(key=_candidate_sort_key)
+            return candidates
+
+        for variant in (name.replace(" ", "-"), name.replace("-", " ")):
+            if variant == name:
+                continue
+            normalized = self._exact_name_matches(variant)
+            if normalized:
+                candidates = [
+                    SubstanceCandidate(uuid, chemical_name, "exact_normalized", 100.0)
+                    for uuid, chemical_name in normalized
+                ]
+                candidates.sort(key=_candidate_sort_key)
+                return candidates
+
+        universe = self._resolvable_substance_universe
+        results = process.extract(name, list(universe.keys()), scorer=fuzz.ratio, limit=len(universe))
+        candidates = [
+            SubstanceCandidate(universe[chemical_name], chemical_name, "fuzzy", score)
+            for chemical_name, score, _ in results
+            if score >= FUZZY_MATCH_LOW_THRESHOLD
+        ]
+        candidates.sort(key=_candidate_sort_key)
+        return candidates
 
     @functools.cached_property
     def _discussion_links(self) -> pd.DataFrame:
