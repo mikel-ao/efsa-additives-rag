@@ -41,7 +41,8 @@ DAILY_QUERY_LIMIT_PER_IP = 10
 DAILY_GLOBAL_QUERY_LIMIT = 200
 # Estimación conservadora (hora punta, nuevo precio DeepSeek V4-Flash
 # desde 16-ago-2026): ~$0.002/consulta. Ajustar si cambia el proveedor
-# o el precio -- ver docs/efsa-rag-proyecto.html -> STACK.json.
+# o el precio -- ver CLAUDE.md, "Decisiones de arquitectura", "Precio
+# LLM de referencia".
 ESTIMATED_COST_PER_QUERY_USD = 0.002
 DAILY_HARD_COST_CEILING_USD = 0.35  # ~7 EUR/mes repartidos en ~30 dias, con margen
 

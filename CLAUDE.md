@@ -14,9 +14,6 @@ en transición a Data Science/AI). La razón de ser del proyecto es la
 diferenciación de dominio, no la ejecución técnica en sí — no lo conviertas
 en un ejercicio genérico de "monté un RAG con LangGraph".
 
-Documentación completa (objetivo, audiencia, stack, roadmap): `docs/efsa-rag-proyecto.html`.
-Ábrelo y léelo también antes de empezar.
-
 ## Cómo trabajar en este repo
 
 - **Verifica contra datos reales antes de implementar, no asumas el esquema.**

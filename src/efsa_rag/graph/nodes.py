@@ -1,5 +1,5 @@
 """
-Los 4 nodos del grafo LangGraph. Ver docs/efsa-rag-proyecto.html -> ARCHITECTURE.md
+Los 4 nodos del grafo LangGraph. Ver CLAUDE.md y docs/DECISIONES_VERIFICADAS.md
 para el diagrama y el razonamiento de cada decisión.
 
 Estado del desarrollo: esqueleto con contratos de entrada/salida definidos

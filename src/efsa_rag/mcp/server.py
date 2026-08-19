@@ -7,14 +7,14 @@ lógica de negocio: `search_efsa_opinion` llama a `answer_question`
 narrativo ni generación LLM) -- ambas funciones ya existentes en
 `graph/build.py`.
 
-Diseño original: `docs/efsa-rag-proyecto.html`, paso 6 del roadmap --
-"search_efsa_opinion y get_reevaluation_status como wrapper del grafo
-compilado". Los nombres y el parámetro único `substance` vienen de ese
-diseño. El esquema completo (tipos, descripciones, forma de la salida,
-y el porqué de los dos caminos de ejecución) se revisó explícitamente
-con el usuario antes de escribir este archivo -- ver CLAUDE.md,
-"Decisiones de arquitectura ya tomadas", sección "Dos caminos de
-ejecución del grafo", para las garantías de seguridad de cada uno
+Diseño original: "search_efsa_opinion y get_reevaluation_status como
+wrapper del grafo compilado". Los nombres y el parámetro único
+`substance` vienen de ese diseño. El esquema completo (tipos,
+descripciones, forma de la salida, y el porqué de los dos caminos de
+ejecución) se revisó explícitamente con el usuario antes de escribir
+este archivo -- ver CLAUDE.md, "Decisiones de arquitectura", sección
+"Dos caminos de ejecución del grafo", para las garantías de seguridad
+de cada uno
 (en particular, por qué saltarse el Nodo 4 en el camino parcial no
 compromete la restricción no negociable #1 sobre comunicación de
 riesgo del ADI/TDI).

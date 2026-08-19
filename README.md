@@ -1,5 +1,20 @@
 # efsa-additives-rag
 
+[![Python](https://img.shields.io/badge/Python-black?style=for-the-badge&logo=python&logoColor=3776AB)](https://www.python.org/)
+[![LangChain](https://img.shields.io/badge/LangChain-black?style=for-the-badge&logo=langchain&logoColor=7FC8FF)](https://www.langchain.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-black?style=for-the-badge&logo=langgraph&logoColor=7FC8FF)](https://www.langchain.com/langgraph)
+[![Streamlit](https://img.shields.io/badge/Streamlit-black?style=for-the-badge&logo=streamlit&logoColor=FF4B4B)](https://streamlit.io/)
+[![ChromaDB](https://img.shields.io/badge/ChromaDB-black?style=for-the-badge)](https://www.trychroma.com/)
+[![MCP](https://img.shields.io/badge/MCP-black?style=for-the-badge&logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io/)
+[![DeepSeek](https://img.shields.io/badge/DeepSeek-black?style=for-the-badge&logo=deepseek&logoColor=5786FE)](https://www.deepseek.com/)
+
+**Índice**
+- [Alcance](#alcance)
+- [Estado actual](#estado-actual)
+- [Setup](#setup)
+- [Deploy en Streamlit Community Cloud](#deploy-en-streamlit-community-cloud)
+- [Aviso](#aviso)
+
 Asistente RAG sobre dictámenes regulatorios de reevaluación de aditivos
 alimentarios (EFSA, Reglamento UE 257/2010).
 
@@ -13,10 +28,6 @@ qué herramientas invocar o en qué orden, la secuencia está fijada de
 antemano.
 
 **Demo pública:** [efsa-additives-rag.streamlit.app](https://efsa-additives-rag.streamlit.app/)
-
-Documentación completa (objetivo, audiencia, arquitectura, stack, roadmap,
-limitaciones conocidas): [`docs/efsa-rag-proyecto.html`](docs/efsa-rag-proyecto.html)
--- ábrelo en el navegador.
 
 ## Alcance
 

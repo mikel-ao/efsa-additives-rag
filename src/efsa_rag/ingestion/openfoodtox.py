@@ -8,7 +8,7 @@ Resultado confirmado: MAX(fecha) filtrado por Type == 'EFSA opinion' devuelve
 correctamente el dictamen de reevaluación de 2013-11-28, entre 5 dictámenes
 candidatos (2006, 2009 x2, 2011 statement, 2013).
 
-Ver docs/efsa-rag-proyecto.html -> ARCHITECTURE.md para el razonamiento completo.
+Ver CLAUDE.md y docs/DECISIONES_VERIFICADAS.md para el razonamiento completo.
 """
 
 from __future__ import annotations
