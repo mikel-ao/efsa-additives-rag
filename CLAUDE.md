@@ -1304,6 +1304,142 @@ Pendiente, en orden de menor a mayor incertidumbre:
      pruebas antes de tocarse.** Si se retoma, verificar primero cuántas
      preguntas reales caen en este hueco (typo agresivo + Nodo 1
      rechaza) antes de relajar la regla a ciegas.
+   - **Investigación de continuación (misma sesión, 19-ago-2026) --
+     prompt relajado probado con llamadas reales, NO puesto en
+     producción por decisión explícita del usuario ("no toques
+     NODE_1_ENTITY_EXTRACTION_PROMPT en producción con esta muestra tan
+     pequeña"). Marcado de PRIORIDAD BAJA, no bloqueante -- caso más
+     idiosincrático que sistémico, ver por qué abajo.** Resultados
+     completos de las dos baterías de prueba (5 typos + 6 preguntas sin
+     sustancia, cada una con el prompt actual y una versión relajada de
+     la regla 4) en el historial de la sesión, no repetidos aquí en
+     detalle -- resumen de lo que importa para decisiones futuras:
+     - **El fallo de "plai caramel" es sensible al FRASEO, no solo a la
+       regla 4 -- mismo patrón ya diagnosticado (y tampoco resuelto
+       todavía) para el Nodo 2 con TiO2/genotoxicidad más arriba (ver
+       "DIAGNÓSTICO... la calidad del retrieval es sensible al fraseo
+       de la pregunta").** Con el prompt ACTUAL sin cambios, la frase
+       pelada `"plai caramel"` SÍ resuelve a `"Plain caramel"`; la MISMA
+       cadena embebida en una pregunta completa ("What is plai caramel
+       used for as a food additive?") da `NONE`, reproducido 2/2 veces
+       de forma determinista (`temperature=0.0`). No es que la regla 4
+       sea intrínsecamente incapaz de tolerar este typo -- es que el
+       contexto de la frase completa cambia la respuesta.
+     - **"plai caramel" NO es representativo de una clase amplia de
+       typos rotos -- de 5 typos probados en forma de pregunta completa
+       (`asprtame`, `titanum doxide`, `sorbik acid`, `xanthum gumm`,
+       `plai caramel`), 4 YA resolvían bien con el prompt ACTUAL sin
+       ningún cambio.** Solo "plai caramel" falla -- hipótesis no
+       verificada más allá de la observación: "caramel" es una palabra
+       común en inglés (a diferencia de "aspartame"/"titanium dioxide",
+       más claramente nombres químicos), lo que puede hacer que el LLM
+       dude más de si la pregunta se refiere a un aditivo concreto
+       cuando está embebida en una frase completa.
+     - **El prompt relajado SÍ elimina el `NONE`, pero no da el nombre
+       esperado -- generaliza al nombre de GRUPO, no a la sal
+       específica.** Para "plai caramel" en pregunta completa, propone
+       `"Caramel colour"` (no `"Plain caramel"`), que
+       `resolve_substance_candidates` resuelve a un único candidato
+       confiado (`"Caramel colours"`, fuzzy 96,55) -- verificado que
+       `"Caramel colours"` y `"Plain caramel"` apuntan al MISMO
+       dictamen (mismo título, "re-evaluation of caramel colours (E 150
+       a,b,c,d)", filas hermanas del mismo dossier de grupo con
+       `Document UUID` distinto). Funcionalmente el usuario llegaría al
+       contenido correcto, aunque no a la sal E150a concreta que
+       nombró.
+     - **Sin regresión detectada en los 6 casos de "sin sustancia"
+       probados** (español e inglés, incluida "aditivos en general"
+       sin nombrar ninguno -- el caso más parecido a un falso positivo
+       posible): el prompt relajado sigue devolviendo `NONE` en los 6,
+       igual que el actual. Dentro de esta muestra pequeña, el riesgo
+       que motivó no tocar la regla a la ligera (inventar sustancias
+       para preguntas sin ninguna) no se materializó -- pero la muestra
+       (6 casos) es demasiado pequeña para tratarlo como garantía.
+     - **Diseño futuro PREFERIBLE, según el usuario, sobre relajar la
+       regla 4 globalmente -- NO diseñado en detalle, solo la
+       dirección:** en vez de cambiar el umbral de confianza del Nodo 1
+       para TODAS las preguntas (con el riesgo de calibración ya
+       anotado arriba), una SEGUNDA PASADA aislada del Nodo 1 -- solo
+       cuando la primera pasada da `NONE` pero la pregunta contiene
+       palabras que podrían ser un nombre de sustancia mal escrito --
+       que reformule/aísle esa entidad concreta antes de decidir. Mismo
+       principio de intervención dirigida (no un cambio global) que se
+       consideró para el caso de TiO2 en el Nodo 2 -- **ojo, ese caso
+       tampoco tiene la reformulación implementada todavía, sigue
+       siendo "diagnosticado, no resuelto" según su propia entrada más
+       arriba** -- no lo trates como un precedente ya funcionando, es
+       la misma clase de solución propuesta y sin construir en los dos
+       sitios. Ninguna parte de esta segunda pasada (cuándo disparar,
+       cómo aislar la entidad, qué prompt usar) está diseñada todavía.
+   - **IMPLEMENTADO (misma sesión, 19-ago-2026, continuación posterior):
+     mensaje honesto de "sustancia no identificada" cuando
+     `substance_candidates` está vacío -- no bloqueado por la
+     investigación de arriba (que sigue sin resolver), es un fix
+     independiente del texto que se muestra en ese caso, no de la
+     resolución en sí.**
+     - **Decisión: enlace FIJO a la página de aditivos de EFSA, NO un
+       buscador con parámetro.** Se investigó primero
+       `https://www.efsa.europa.eu/en/search?query={término}` -- el
+       parámetro `query=` es real (reaparece en los enlaces internos
+       del propio sitio, y `curl` confirma que solo `/en/search`
+       específicamente da 403 de CloudFront, no el resto del dominio) --
+       pero **el usuario lo verificó en un navegador real y confirmó que
+       NO filtra de verdad**: muestra el mismo listado genérico
+       ("Results 1-10 of 18734", títulos sin relación con la sustancia)
+       tanto para "aspartame" como para una cadena sin sentido -- SPA
+       cuyo filtrado real (si existe) depende de JavaScript del lado
+       del cliente que ni la verificación automatizada de esta sesión
+       ni, según el usuario, el navegador real, mostraron funcionando.
+       **Descartado.** En su lugar: `EFSA_FOOD_ADDITIVES_URL =
+       "https://www.efsa.europa.eu/en/topics/topic/food-additives"`
+       (`graph/nodes.py`) -- la página general de aditivos alimentarios
+       de EFSA, verificada con `curl` (HTTP 200, sin bloqueo) y con
+       `WebFetch` (landing page real, cita la cifra de 315 sustancias
+       pre-2009 en reevaluación -- misma cifra ya verificada y citada
+       en el README de este proyecto -- con enlaces a OpenEFSA y a
+       dictámenes del EFSA Journal).
+     - **Texto del mensaje, deliberadamente SIN la afirmación "esta
+       sustancia no tiene reevaluaciones recientes"** -- esa frase no es
+       verificable por el sistema y podría ser FALSA: el caso real
+       "plai caramel" de esta misma sesión demostró que la sustancia SÍ
+       existía y SÍ tenía un dictamen vigente indexado (Plain caramel,
+       parte del grupo E150a-d) -- el fallo fue de RESOLUCIÓN DE NOMBRE
+       (ver el punto de arriba, sensibilidad al fraseo del Nodo 1), no
+       de ausencia real de reevaluación. Mensaje nuevo, honesto sobre la
+       incertidumbre: "No se ha podido identificar esta sustancia
+       dentro del corpus indexado (aditivos en reevaluación bajo el
+       Reglamento UE 257/2010); puede que esté fuera de ese alcance, o
+       que el nombre no se haya reconocido correctamente. Para buscar
+       directamente en las fuentes de EFSA: [enlace fijo], usando el
+       término "[query del usuario tal cual]"."
+     - **El término incluido es `user_query` (la pregunta completa tal
+       como la escribió el usuario), NO `substance_name`** (la
+       propuesta normalizada/traducida del LLM del Nodo 1) -- decisión
+       deliberada: en el caso donde este mensaje aplica,
+       `substance_name` por definición no resolvió nada (o ni siquiera
+       existe, si el Nodo 1 respondió `NONE`), así que mostrarlo en vez
+       del texto original arriesgaría presentar al usuario un nombre
+       que ni él escribió ni el sistema pudo verificar, como si fuera
+       fiable. Verificado con llamada real
+       (`answer_question("What is plai caramel used for as a food
+       additive?")`): la respuesta final incluye el enlace fijo y cita
+       la pregunta completa del usuario tal cual, sin reformularla.
+     - **Implementación acotada a propósito, sin tocar el caso de 1
+       candidato:** nueva función `_format_unresolved_substance_message`
+       (`graph/nodes.py`), usada SOLO cuando `substance_candidates` está
+       vacío (`_build_user_prompt`, ahora con 3 ramas explícitas: 0
+       candidatos / 1 candidato / 2+ candidatos, en vez de agrupar 0 y 1
+       juntos como antes). El mensaje genérico interno YA EXISTENTE de
+       `_format_retrieved_chunks` (para "chunks vacíos +
+       structured_result None") se mantiene SIN CAMBIOS -- sigue
+       usándose para el caso distinto de un candidato SÍ identificado
+       (1 o dentro de 2+) cuyo dictamen concreto no resuelve, donde el
+       mensaje de "no se ha podido identificar la sustancia" no
+       aplicaría con propiedad (la sustancia SÍ se identificó). Ese otro
+       mensaje tiene una inconsistencia latente preexistente
+       (potencialmente engañoso en ese caso concreto, ya presente antes
+       de esta sesión) que NO se tocó aquí -- fuera de alcance de lo
+       pedido, no una omisión.
 3. **Integrar `END_SUM.Discussion.Discussion` en `OpinionReference`**,
    con el heurístico de detección de boilerplate ya validado en datos
    (ver "Hallazgos verificados": `len < 280` caracteres O duplicado

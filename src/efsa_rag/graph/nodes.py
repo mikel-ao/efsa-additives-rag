@@ -523,6 +523,58 @@ def _format_structured_result(result: OpinionReference | None) -> str:
     )
 
 
+# Enlace FIJO a la página general de aditivos alimentarios de EFSA -- NO
+# un buscador con parámetro. Se probó `efsa.europa.eu/en/search?query=...`
+# primero (sesión 19-ago-2026): el parámetro `query=` es real (reaparece
+# en los enlaces internos del propio sitio), pero verificado en
+# NAVEGADOR REAL por el usuario que NO filtra de verdad -- muestra el
+# mismo listado genérico (18.734 resultados, títulos sin relación) para
+# "aspartame" y para una cadena sin sentido. Descartado. Esta URL fija,
+# en cambio, SÍ es la página apropiada (confirmado con `curl`, HTTP 200
+# sin bloqueo -- a diferencia de `/en/search`, que da 403 de CloudFront
+# incluso a un cliente no-navegador) y su contenido es el esperado:
+# landing page de aditivos alimentarios de EFSA, con la cifra de 315
+# sustancias pre-2009 y progreso de reevaluación (misma cifra ya citada
+# en el README de este proyecto), enlaces a OpenEFSA y a los dictámenes
+# del EFSA Journal.
+EFSA_FOOD_ADDITIVES_URL = "https://www.efsa.europa.eu/en/topics/topic/food-additives"
+
+
+def _format_unresolved_substance_message(user_query: str) -> str:
+    """Mensaje para cuando `substance_candidates` está VACÍO -- ninguna
+    sustancia se identificó en absoluto (ni exacto, ni normalizado por
+    guion/espacio, ni fuzzy -- ver
+    `OpenFoodToxStore.resolve_substance_candidates`).
+
+    NO afirma "esta sustancia no tiene reevaluaciones recientes" -- esa
+    frase no es verificable por el sistema y puede ser FALSA: el caso
+    real "plai caramel" (sesión 19-ago-2026) demostró que la sustancia
+    SÍ existía y SÍ tenía un dictamen vigente indexado -- el problema
+    fue de resolución de nombre (sensibilidad al fraseo del Nodo 1, ver
+    CLAUDE.md), no de ausencia real de dictamen. Este mensaje comunica
+    la incertidumbre tal cual es -- no se pudo identificar la sustancia
+    DENTRO del corpus indexado, sin afirmar nada sobre si existe o no
+    fuera de él.
+
+    Incluye `user_query` TAL CUAL la escribió el usuario (no
+    `substance_name`, que es la propuesta del LLM del Nodo 1 -- puede
+    estar traducida/normalizada y, en el caso donde este mensaje aplica,
+    por definición no resolvió nada, así que mostrarla en vez del texto
+    original arriesga confundir al usuario con un nombre que ni él
+    escribió ni el sistema pudo verificar) para que pueda copiarlo y
+    pegarlo directamente en la búsqueda del sitio de EFSA.
+    """
+    return (
+        "No se ha podido identificar esta sustancia dentro del corpus "
+        "indexado (aditivos en reevaluación bajo el Reglamento UE "
+        "257/2010); puede que esté fuera de ese alcance, o que el "
+        "nombre no se haya reconocido correctamente. Para buscar "
+        f"directamente en las fuentes de EFSA: {EFSA_FOOD_ADDITIVES_URL}, "
+        f"usando el término \"{user_query}\" (tal como lo escribió el "
+        "usuario)."
+    )
+
+
 def _format_retrieved_chunks(
     chunks: list[RetrievedChunk] | None, structured_result: OpinionReference | None = None
 ) -> str:
@@ -578,10 +630,43 @@ def _chunks_for_substance(chunks: list[RetrievedChunk] | None, substance_uuid: s
     return [c for c in chunks if c.substance_uuid == substance_uuid]
 
 
+def _single_substance_prompt(query: str, substance: str, structured: str, chunks: str) -> str:
+    """Plantilla compartida por el caso de 0 candidatos (`_build_user_prompt`
+    con `substance_candidates` vacío) y el de 1 candidato -- mismo formato
+    exacto que antes de la sesión 19-ago-2026 (resolución multi-candidato),
+    sin envoltorio de "candidato 1 de 1", para no regresar el comportamiento
+    ya probado contra la API real (caso aspartamo, Shellac)."""
+    return f"""\
+Pregunta del usuario: {query}
+
+Sustancia identificada: {substance}
+
+CONTEXTO -- dictamen vigente (fuente: OpenFoodTox, consulta determinista):
+{structured}
+
+CONTEXTO -- fragmentos narrativos recuperados del dictamen (fuente: PDFs indexados):
+{chunks}
+
+Responde a la pregunta del usuario usando solo el CONTEXTO anterior, \
+siguiendo las reglas de fundamentación y de comunicación de riesgo del \
+system prompt."""
+
+
 def _build_user_prompt(state: GraphState) -> str:
     """Construye el prompt de usuario del Nodo 4.
 
-    Caso de 0 o 1 candidato: EXACTAMENTE el mismo formato que antes de la
+    Caso de 0 candidatos: `substance_candidates` vacío -- ninguna
+    sustancia se identificó en absoluto. Usa
+    `_format_unresolved_substance_message` (enlace fijo a EFSA +
+    término del usuario tal cual, ver esa función) en vez del mensaje
+    genérico interno de `_format_retrieved_chunks` -- ese mensaje
+    genérico se mantiene sin cambios para su otro uso (candidato
+    identificado pero sin dictamen/chunks propios, dentro del caso de 1
+    o 2+ candidatos), donde SÍ hubo una sustancia identificada y el
+    mensaje de "no se ha podido identificar" no aplicaría con
+    propiedad.
+
+    Caso de 1 candidato: EXACTAMENTE el mismo formato que antes de la
     sesión 19-ago-2026 (resolución multi-candidato) -- sin envoltorio de
     "candidato 1 de 1", para no regresar el comportamiento ya probado
     contra la API real (caso aspartamo, Shellac).
@@ -600,27 +685,16 @@ def _build_user_prompt(state: GraphState) -> str:
     structured_results = state.get("structured_results") or {}
     all_chunks = state.get("retrieved_chunks")
 
-    if len(candidates) <= 1:
-        structured_result = (
-            structured_results.get(candidates[0].substance_uuid) if candidates else None
-        )
+    if not candidates:
+        structured = _format_structured_result(None)
+        chunks = _format_unresolved_substance_message(query)
+        return _single_substance_prompt(query, substance, structured, chunks)
+
+    if len(candidates) == 1:
+        structured_result = structured_results.get(candidates[0].substance_uuid)
         structured = _format_structured_result(structured_result)
         chunks = _format_retrieved_chunks(all_chunks, structured_result)
-
-        return f"""\
-Pregunta del usuario: {query}
-
-Sustancia identificada: {substance}
-
-CONTEXTO -- dictamen vigente (fuente: OpenFoodTox, consulta determinista):
-{structured}
-
-CONTEXTO -- fragmentos narrativos recuperados del dictamen (fuente: PDFs indexados):
-{chunks}
-
-Responde a la pregunta del usuario usando solo el CONTEXTO anterior, \
-siguiendo las reglas de fundamentación y de comunicación de riesgo del \
-system prompt."""
+        return _single_substance_prompt(query, substance, structured, chunks)
 
     truncation_note = ""
     if state.get("candidates_truncated"):

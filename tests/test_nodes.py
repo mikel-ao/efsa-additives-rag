@@ -42,6 +42,7 @@ import pytest
 from efsa_rag.graph.llm_client import LLMClient, LLMResponse
 from efsa_rag.graph.nodes import (
     DEFAULT_RETRIEVAL_K,
+    EFSA_FOOD_ADDITIVES_URL,
     NODE_4_MAX_TOKENS,
     NODE_4_RETRY_MAX_TOKENS,
     NodeDependencies,
@@ -49,6 +50,7 @@ from efsa_rag.graph.nodes import (
     _build_user_prompt,
     _format_retrieved_chunks,
     _format_structured_result,
+    _format_unresolved_substance_message,
     extract_entity_node,
     generate_answer_node,
     hybrid_retrieval_node,
@@ -593,3 +595,67 @@ def test_build_user_prompt_truncated_candidates_announces_it_explicitly():
 
     assert "Hay más de" in prompt
     assert "se muestran las" in prompt
+
+
+# --------------------------------------------------------------------- #
+# Nodo 4 -- mensaje de sustancia no identificada (sesión 19-ago-2026,
+# caso real "plai caramel": la sustancia SÍ existe y SÍ tiene dictamen
+# vigente, el fallo fue de resolución de nombre, no de ausencia real --
+# el mensaje NO debe afirmar "esta sustancia no tiene reevaluaciones
+# recientes" (no verificable, potencialmente falso).
+# --------------------------------------------------------------------- #
+
+
+def test_format_unresolved_substance_message_includes_fixed_efsa_link_and_verbatim_query():
+    """El mensaje debe incluir el enlace FIJO a EFSA (no un buscador con
+    parámetro -- descartado en esta sesión tras verificarse en navegador
+    real que no filtra) y el texto de la pregunta del usuario TAL CUAL,
+    sin reformular."""
+    raw_query = "¿Para qué se usa el plai caramel como aditivo??? typo aposta"
+    message = _format_unresolved_substance_message(raw_query)
+
+    assert EFSA_FOOD_ADDITIVES_URL in message
+    assert raw_query in message  # verbatim, no reformulado ni corregido
+    assert "esta sustancia no tiene reevaluaciones recientes" not in message.lower()
+    assert "no se ha podido identificar esta sustancia" in message.lower()
+
+
+def test_build_user_prompt_no_candidates_uses_unresolved_substance_message():
+    """Con `substance_candidates` vacío, `_build_user_prompt` debe usar
+    `_format_unresolved_substance_message` (enlace EFSA + query verbatim)
+    en vez del mensaje genérico interno de `_format_retrieved_chunks` --
+    y el texto de la pregunta original debe aparecer sin cambios."""
+    raw_query = "What is plai caramel used for as a food additive?"
+    state = {
+        "user_query": raw_query,
+        "substance_name": None,
+        "substance_candidates": [],
+        "structured_results": {},
+        "retrieved_chunks": None,
+    }
+
+    prompt = _build_user_prompt(state)
+
+    assert EFSA_FOOD_ADDITIVES_URL in prompt
+    assert raw_query in prompt
+    assert "no se ha podido identificar esta sustancia" in prompt.lower()
+    assert "esta sustancia no tiene reevaluaciones recientes" not in prompt.lower()
+
+
+def test_build_user_prompt_single_candidate_does_not_use_unresolved_message():
+    """Con exactamente 1 candidato identificado (aunque su dictamen no
+    resuelva), el mensaje de "no se ha podido identificar" NO debe
+    aparecer -- la sustancia SÍ se identificó, solo falta el dictamen."""
+    candidate = _fake_candidate("Aspartame", 100.0, "uuid-aspartame")
+    state = {
+        "user_query": "What is the ADI of aspartame?",
+        "substance_name": "Aspartame",
+        "substance_candidates": [candidate],
+        "structured_results": {"uuid-aspartame": None},
+        "retrieved_chunks": [],
+    }
+
+    prompt = _build_user_prompt(state)
+
+    assert "no se ha podido identificar esta sustancia" not in prompt.lower()
+    assert EFSA_FOOD_ADDITIVES_URL not in prompt
