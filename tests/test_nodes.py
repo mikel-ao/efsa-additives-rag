@@ -165,17 +165,24 @@ def test_format_retrieved_chunks_flags_tier3_with_confidence_caveat():
     assert "coincidencia de nombre en el título" in tier3_block
 
 
-def test_format_retrieved_chunks_empty_and_no_structured_result_blames_resolution():
-    """Caso diagnosticado con datos reales (sesión 19-ago-2026, tocoferol):
-    cuando NI structured_result NI retrieved_chunks tienen nada, la causa
-    real es que el Nodo 1 no resolvió `substance_uuid` de forma exacta --
-    nunca que el corpus de PDFs no esté indexado (67.827 chunks reales).
-    Afirmar eso sería una causa falsa, ver CLAUDE.md.
-    """
+def test_format_retrieved_chunks_empty_and_no_structured_result_reports_no_opinion_found():
+    """CONTRATO ACTUAL (sesión 19-ago-2026, fix del caso real "Olive leaf
+    dry extract" -- ver test_openfoodtox_joins.py y CLAUDE.md): esta
+    función ya solo se llama desde `_build_user_prompt` en ramas donde
+    la sustancia YA se identificó (el caso de 0 candidatos usa
+    `_format_unresolved_substance_message` en su lugar, nunca esta). Por
+    eso, cuando `structured_result` es `None`, el mensaje NO debe volver
+    a culpar a la resolución de sustancia (bug corregido en esta sesión
+    -- antes decía "no se ha podido resolver de forma exacta la
+    sustancia", CONDICIONALMENTE falso: cierto solo para el caso de 0
+    candidatos, pero reutilizado también aquí sin distinguir el
+    contexto). Tampoco debe repetir el bug incondicionalmente falso ya
+    corregido antes ("el corpus no está indexado", nunca cierto)."""
     for chunks in (None, []):
         text = _format_retrieved_chunks(chunks, structured_result=None)
         assert "no está indexado" not in text
-        assert "resolver de forma exacta la sustancia" in text
+        assert "resolver de forma exacta la sustancia" not in text
+        assert "no se ha encontrado ningún dictamen" in text
 
 
 def test_format_retrieved_chunks_empty_but_structured_result_present_differs():
@@ -194,6 +201,50 @@ def test_format_retrieved_chunks_empty_but_structured_result_present_differs():
     assert "no está indexado" not in text
     assert "resolver de forma exacta la sustancia" not in text
     assert "no se han encontrado fragmentos narrativos indexados" in text
+
+
+def test_build_user_prompt_olive_leaf_extract_real_case_does_not_self_contradict(
+    store: OpenFoodToxStore,
+):
+    """Caso de regresión con datos REALES, no construido a mano -- "Olive
+    leaf dry extract from O. europaea L." (mismo caso ya probado en
+    test_openfoodtox_joins.py::test_olive_leaf_extract_has_no_real_food_additive_opinion):
+    resuelve por nombre EXACTO en SUB (1 candidato), pero su único
+    dossier es de pienso animal -- current_reference_value_opinion da
+    None, sin ningún dictamen alimentario real.
+
+    Antes del fix de esta sesión, el prompt resultante se contradecía a
+    sí mismo: "Sustancia identificada: Olive leaf dry extract..." seguido
+    de un mensaje que afirmaba "no se ha podido resolver de forma exacta
+    la sustancia mencionada en la pregunta" -- verificado con una llamada
+    real al pipeline completo (hybrid_retrieval_node + verify_currency_node
+    + _build_user_prompt, sin mock) antes de escribir el fix. Este test
+    bloquea que la contradicción vuelva a aparecer."""
+    name = "Olive leaf dry extract from O. europaea L."
+    candidates = store.resolve_substance_candidates(name)
+    assert len(candidates) == 1, f"Se esperaba 1 candidato exacto, se obtuvo: {candidates!r}"
+    assert candidates[0].match_type == "exact"
+
+    result = store.current_reference_value_opinion(candidates[0].substance_uuid)
+    assert result is None, "Precondición del caso: sin dictamen alimentario real"
+
+    state = {
+        "user_query": "Is olive leaf dry extract safe as a food additive?",
+        "substance_name": name,
+        "substance_candidates": candidates,
+        "structured_results": {candidates[0].substance_uuid: None},
+        "retrieved_chunks": [],
+    }
+
+    prompt = _build_user_prompt(state)
+
+    assert f"Sustancia identificada: {name}" in prompt
+    # La contradicción real que motivó el fix: la sustancia SÍ se
+    # identificó (línea de arriba), así que el prompt NUNCA debe decir
+    # que no pudo resolverse.
+    assert "no se ha podido resolver de forma exacta la sustancia" not in prompt
+    assert "no se ha encontrado ningún dictamen" in prompt
+    assert "la sustancia fue identificada" in prompt
 
 
 # --------------------------------------------------------------------- #

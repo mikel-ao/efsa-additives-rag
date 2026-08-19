@@ -1440,6 +1440,67 @@ Pendiente, en orden de menor a mayor incertidumbre:
        (potencialmente engañoso en ese caso concreto, ya presente antes
        de esta sesión) que NO se tocó aquí -- fuera de alcance de lo
        pedido, no una omisión.
+   - **RESUELTO (misma sesión, continuación posterior) -- la
+     inconsistencia latente de arriba SÍ se arregló, con un caso real
+     verificado, no en abstracto.** Caso real usado:
+     `"Olive leaf dry extract from O. europaea L."` -- ya documentado
+     como caso de regresión en `test_openfoodtox_joins.py` desde la
+     sesión 17-ago-2026 (`test_olive_leaf_extract_has_no_real_food_additive_opinion`):
+     resuelve por nombre EXACTO en `SUB` (`substance_candidates` con 1
+     elemento, tier `"exact"`), pero su única fila en `DOSSIER` es un
+     dossier de PIENSO ANIMAL -- tras excluirlo por dominio,
+     `current_reference_value_opinion` da `None`, sin ningún dictamen
+     alimentario real. Probado con el pipeline real completo
+     (`hybrid_retrieval_node` + `verify_currency_node` +
+     `_build_user_prompt`, sin mock, contra el store y Chroma reales)
+     ANTES de escribir el fix, para confirmar el bug en vivo, no solo en
+     teoría: el prompt resultante se contradecía a sí mismo -- la línea
+     `"Sustancia identificada: Olive leaf dry extract..."` aparecía
+     justo encima de un mensaje que afirmaba `"no se ha podido resolver
+     de forma exacta la sustancia mencionada en la pregunta"`.
+     - **Distinción entre los DOS tipos de bug de mensaje cazados esta
+       semana en este mismo archivo de nodos (`graph/nodes.py`) --
+       relacionados pero de naturaleza distinta, no confundirlos:**
+       1. **Incondicionalmente falso** (el bug de "el corpus de PDFs
+          todavía no está indexado", sesión 19-ago-2026 anterior, caso
+          tocoferol/E150a): el mensaje afirma algo que NUNCA es cierto
+          en ningún contexto de la aplicación (el corpus SIEMPRE tiene
+          67.827 chunks indexados) -- el fix fue cambiar el texto en sí,
+          sin tocar la lógica de cuándo se dispara.
+       2. **Condicionalmente falso por reutilización sin contexto**
+          (este bug, "Olive leaf dry extract"): el mensaje ERA cierto en
+          el contexto para el que se escribió originalmente (0
+          candidatos -- "no se ha podido resolver... la sustancia"), y
+          SIGUE siendo cierto ahí, pero la misma función
+          (`_format_retrieved_chunks`) se reutilizaba sin distinguir ese
+          caso del de "sí hay candidato, pero sin dictamen concreto" --
+          donde la MISMA frase pasa a ser falsa. El fix real no fue solo
+          cambiar el texto, fue separar los DOS CONTEXTOS que antes
+          compartían una función: `_build_user_prompt` con 0 candidatos
+          ahora usa `_format_unresolved_substance_message` (nunca
+          `_format_retrieved_chunks`); `_format_retrieved_chunks` en sí
+          se documentó con la precondición explícita de que solo se
+          llama hoy cuando YA hay un candidato identificado, y su propio
+          mensaje se corrigió para dejar de asumir lo contrario.
+     - **Lección para el patrón general, más allá de este caso
+       concreto:** un mensaje de error/degradación escrito para UN
+       contexto específico (aquí, "0 candidatos") puede volverse
+       engañoso si la misma función que lo produce se reutiliza después
+       para un contexto distinto (aquí, "candidato identificado, sin
+       dictamen") sin que la función sepa distinguirlos. No basta con
+       revisar si un mensaje es cierto en abstracto -- hay que revisar
+       en qué contextos REALES se dispara hoy (grep de callers, no
+       suposición) antes de darlo por seguro.
+     - Verificado también con una llamada real de extremo a extremo,
+       incluida la generación del Nodo 4 (`generate_answer_node` con
+       `llm_client` real, sin mock): la respuesta final nombra la
+       sustancia correctamente y dice honestamente que no se encontró
+       ningún dictamen vigente para ella en el corpus, sin ninguna
+       contradicción con el nombre ya identificado.
+     - Test de regresión con este caso exacto:
+       `tests/test_nodes.py::test_build_user_prompt_olive_leaf_extract_real_case_does_not_self_contradict`
+       (usa el `store` real, mismo patrón que los demás tests de casos
+       reales conocidos de este proyecto -- no un mock).
 3. **Integrar `END_SUM.Discussion.Discussion` en `OpinionReference`**,
    con el heurístico de detección de boilerplate ya validado en datos
    (ver "Hallazgos verificados": `len < 280` caracteres O duplicado

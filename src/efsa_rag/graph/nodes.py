@@ -578,21 +578,50 @@ def _format_unresolved_substance_message(user_query: str) -> str:
 def _format_retrieved_chunks(
     chunks: list[RetrievedChunk] | None, structured_result: OpinionReference | None = None
 ) -> str:
+    """NOTA de contrato (sesión 19-ago-2026, fix del caso "Olive leaf dry
+    extract"): esta función SOLO se llama hoy desde `_build_user_prompt`
+    en las ramas donde YA hay un candidato identificado (1 candidato, o
+    dentro del bloque de 2+) -- el caso de 0 candidatos usa
+    `_format_unresolved_substance_message` en su lugar, nunca esta
+    función. Los dos mensajes de abajo dan por hecho que la sustancia SÍ
+    se identificó -- si en el futuro se añade una llamada desde un
+    contexto sin sustancia identificada, hay que revisar este supuesto
+    primero, no asumir que sigue siendo válido.
+    """
     if not chunks:
         if structured_result is None:
-            # Caso diagnosticado con datos reales (sesión 19-ago-2026,
-            # caso tocoferol -- ver CLAUDE.md, pendiente sobre nombre
-            # genérico del LLM vs. variantes con prefijo/sufijo en
-            # `SUB.ChemicalName`): cuando NINGUNO de los dos nodos
-            # tiene nada, la causa real casi siempre es que el Nodo 1
-            # no resolvió `substance_uuid` -- NUNCA que el corpus no
-            # esté indexado (67.827 chunks reales, verificado). Afirmar
-            # "el corpus no está indexado" es una causa falsa y
-            # engañosa -- no la repitas aunque parezca inofensiva.
+            # Caso real, no hipotético -- "Olive leaf dry extract from O.
+            # europaea L." (sesión 17-ago-2026, ver
+            # test_olive_leaf_extract_has_no_real_food_additive_opinion):
+            # resuelve por nombre EXACTO en SUB (substance_candidates NO
+            # está vacío), pero su única fila en DOSSIER es un dossier de
+            # PIENSO ANIMAL -- tras excluirlo por dominio,
+            # current_reference_value_opinion da None, sin ningún
+            # dictamen alimentario real que recuperar.
+            #
+            # Bug encontrado y corregido en esta sesión (mismo día que el
+            # de arriba, distinta naturaleza): el texto anterior aquí
+            # decía "no se ha podido resolver de forma exacta la
+            # sustancia mencionada en la pregunta" -- CONDICIONALMENTE
+            # falso, no incondicionalmente falso como el bug de "corpus
+            # no indexado" de más abajo. Era cierto para el caso de 0
+            # candidatos (el motivo original del texto), pero esta
+            # función se reutilizaba SIN distinguir ese caso del de "sí
+            # hay candidato, pero sin dictamen" -- verificado con una
+            # llamada real (pipeline completo, sin mock) que el prompt
+            # resultante se contradecía a sí mismo: la línea "Sustancia
+            # identificada: Olive leaf dry extract..." aparecía justo
+            # encima de una frase que afirmaba lo contrario. Ver
+            # CLAUDE.md para la distinción entre este tipo de bug
+            # (mensaje reutilizado sin contexto) y el de "corpus no
+            # indexado" (mensaje incondicionalmente falso).
             return (
-                "(vacío -- no se ha podido resolver de forma exacta la "
-                "sustancia mencionada en la pregunta; no hay fragmentos "
-                "narrativos disponibles para esta consulta)"
+                "(vacío -- la sustancia fue identificada, pero no se ha "
+                "encontrado ningún dictamen de aditivo alimentario "
+                "vigente para ella en el corpus indexado; puede estar "
+                "fuera del alcance de este programa de reevaluación, o "
+                "evaluada solo bajo otro régimen regulatorio. No hay "
+                "fragmentos narrativos disponibles para esta consulta)"
             )
         # `structured_result` SÍ existe pero no hay chunks -- causa
         # distinta (el dictamen vigente se resolvió por la cadena de
@@ -658,13 +687,11 @@ def _build_user_prompt(state: GraphState) -> str:
     Caso de 0 candidatos: `substance_candidates` vacío -- ninguna
     sustancia se identificó en absoluto. Usa
     `_format_unresolved_substance_message` (enlace fijo a EFSA +
-    término del usuario tal cual, ver esa función) en vez del mensaje
-    genérico interno de `_format_retrieved_chunks` -- ese mensaje
-    genérico se mantiene sin cambios para su otro uso (candidato
-    identificado pero sin dictamen/chunks propios, dentro del caso de 1
-    o 2+ candidatos), donde SÍ hubo una sustancia identificada y el
-    mensaje de "no se ha podido identificar" no aplicaría con
-    propiedad.
+    término del usuario tal cual, ver esa función), NUNCA
+    `_format_retrieved_chunks` -- esa función, desde el fix del caso
+    "Olive leaf dry extract" (sesión 19-ago-2026), da por hecho que YA
+    hay un candidato identificado (ver su propio docstring) -- usarla
+    aquí volvería a introducir la contradicción ya corregida.
 
     Caso de 1 candidato: EXACTAMENTE el mismo formato que antes de la
     sesión 19-ago-2026 (resolución multi-candidato) -- sin envoltorio de
