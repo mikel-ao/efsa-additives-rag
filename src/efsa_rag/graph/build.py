@@ -182,20 +182,29 @@ class AnswerResult:
 
     `substance_candidates`/`structured_results` AÑADIDOS (sesión
     19-ago-2026, resolución multi-candidato) -- CAMPOS ADITIVOS con
-    default, colocados DESPUÉS de los 4 campos originales a propósito:
-    el servidor MCP (`mcp/server.py`) queda deliberadamente FUERA de este
-    cambio (ver CLAUDE.md, pendiente explícito) y sigue construyendo/
-    consumiendo `AnswerResult` con el contrato de un único resultado --
-    `tests/test_mcp_server.py` construye `AnswerResult(...)` directamente
-    y NO debía tocarse. `structured_result` (singular) sigue poblado,
-    ahora con el candidato top (`candidates[0]`, ya ordenado de forma
-    determinista por `_candidate_sort_key` -- ver
-    `OpenFoodToxStore.resolve_substance_candidates`) para mantener ese
-    contrato con cero cambios visibles cuando solo hay 1 candidato. Un
-    caller que SÍ quiera ver todos los candidatos (no el MCP, que se
-    queda con el campo singular) usa estos dos campos nuevos en vez de
-    reconstruir el retrieval a mano -- mismo principio que motivó esta
-    clase en origen."""
+    default, colocados DESPUÉS de los 4 campos originales para no romper
+    ningún constructor existente. En esa misma sesión, el servidor MCP
+    (`mcp/server.py`) se dejó DELIBERADAMENTE fuera del cambio -- seguía
+    usando solo `structured_result`/`substance_name` (el candidato top).
+    **ESO YA NO ES CIERTO -- en una sesión posterior (mismo día,
+    continuación), `search_efsa_opinion`/`get_reevaluation_status` se
+    rediseñaron para devolver SIEMPRE un array de resultados
+    (`{"candidates_found", "candidates_shown", "results": [...]}`, ver
+    CLAUDE.md) y ahora SÍ consumen `substance_candidates`/
+    `structured_results` directamente, no solo el campo singular.**
+    `structured_result` (singular) se mantiene por compatibilidad con
+    quien construya `AnswerResult` esperando ese campo (`tests/test_mcp_server.py`
+    sigue construyéndolo directamente en sus stubs, aunque `mcp/server.py`
+    en producción ya no lo lea) -- sigue poblado con el candidato top
+    (`candidates[0]`, orden determinista vía `_candidate_sort_key`).
+
+    `candidates_total_found` AÑADIDO en la misma sesión del rediseño del
+    MCP -- el total de candidatos ANTES del recorte a
+    `MAX_CANDIDATES_SHOWN` (ver `GraphState.candidates_total_found`,
+    `graph/nodes.py::extract_entity_node`). `len(substance_candidates)`
+    por sí solo no basta para que el MCP reporte "candidates_found" de
+    forma honesta cuando hubo recorte -- daría el número YA recortado,
+    no el real."""
 
     answer: str
     retrieved_chunks: list[RetrievedChunk]
@@ -203,6 +212,7 @@ class AnswerResult:
     substance_name: str | None
     substance_candidates: list[SubstanceCandidate] = field(default_factory=list)
     structured_results: dict[str, OpinionReference | None] = field(default_factory=dict)
+    candidates_total_found: int = 0
 
 
 def answer_question(query: str) -> AnswerResult:
@@ -242,6 +252,7 @@ def answer_question(query: str) -> AnswerResult:
         substance_name=result.get("substance_name"),
         substance_candidates=candidates,
         structured_results=structured_results,
+        candidates_total_found=result.get("candidates_total_found", 0),
     )
 
 
@@ -255,11 +266,25 @@ class ReevaluationStatus:
     normalización determinista + resolución exacta contra `SUB`
     -- salvo la propia llamada al LLM del Nodo 1 para identificar la
     sustancia, que no compone nada sobre el ADI -- y `structured_result`
-    es lectura directa de OpenFoodTox, igual que en `AnswerResult`)."""
+    es lectura directa de OpenFoodTox, igual que en `AnswerResult`).
+
+    `substance_uuid`/`structured_result` (singulares) se quedan con el
+    candidato top por compatibilidad hacia atrás con quien ya construya
+    esta clase esperando esos dos campos. `substance_candidates`/
+    `structured_results`/`candidates_total_found` AÑADIDOS (sesión
+    19-ago-2026, rediseño de la salida del MCP -- ver CLAUDE.md, "Opción
+    A" del rediseño de `search_efsa_opinion`/`get_reevaluation_status"):
+    ahora es `get_reevaluation_status` quien consume estos campos
+    plurales directamente (ya no solo el singular) -- mismo principio
+    que `AnswerResult`, mismos nombres de campo por consistencia entre
+    las dos clases."""
 
     substance_name: str | None
     substance_uuid: str | None
     structured_result: OpinionReference | None
+    substance_candidates: list[SubstanceCandidate] = field(default_factory=list)
+    structured_results: dict[str, OpinionReference | None] = field(default_factory=dict)
+    candidates_total_found: int = 0
 
 
 def resolve_current_opinion(query: str) -> ReevaluationStatus:
@@ -284,12 +309,13 @@ def resolve_current_opinion(query: str) -> ReevaluationStatus:
     `substance_candidates`, `verify_currency_node` lanzaría `ValueError`
     si se le llamara) -- mismo criterio, no una regla nueva.
 
-    Con 2+ candidatos, el Nodo 3 ya calcula TODOS (coste ya pagado, no se
-    duplica) pero esta función devuelve solo el candidato top
-    (`candidates[0]`, orden determinista vía `_candidate_sort_key`) --
-    ver CLAUDE.md, MCP (`mcp/server.py`) queda deliberadamente fuera del
-    cambio de resolución multi-candidato y sigue con el contrato de un
-    único resultado.
+    Devuelve TODOS los candidatos (`substance_candidates`/
+    `structured_results`), no solo el top -- `get_reevaluation_status`
+    (`mcp/server.py`) los usa para construir su array `results` completo
+    desde el rediseño de esta sesión. Los campos singulares
+    (`substance_uuid`/`structured_result`) se mantienen con el candidato
+    top (`candidates[0]`, orden determinista vía `_candidate_sort_key`)
+    por compatibilidad hacia atrás con otros callers.
     """
     global _default_deps
 
@@ -300,7 +326,10 @@ def resolve_current_opinion(query: str) -> ReevaluationStatus:
     candidates = state.get("substance_candidates") or []
     if not candidates:
         return ReevaluationStatus(
-            substance_name=state.get("substance_name"), substance_uuid=None, structured_result=None
+            substance_name=state.get("substance_name"),
+            substance_uuid=None,
+            structured_result=None,
+            candidates_total_found=state.get("candidates_total_found", 0),
         )
 
     state = verify_currency_node(state, _default_deps)
@@ -310,6 +339,9 @@ def resolve_current_opinion(query: str) -> ReevaluationStatus:
         substance_name=state.get("substance_name"),
         substance_uuid=top.substance_uuid,
         structured_result=structured_results.get(top.substance_uuid),
+        substance_candidates=candidates,
+        structured_results=structured_results,
+        candidates_total_found=state.get("candidates_total_found", len(candidates)),
     )
 
 

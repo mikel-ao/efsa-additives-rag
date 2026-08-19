@@ -12,6 +12,13 @@ toca xlsx, Chroma ni ninguna API real, y no se gasta ni un token.
 pytest-asyncio en el proyecto (no está en requirements.txt), se
 invocan con `asyncio.run(...)` dentro de tests síncronos normales, en
 vez de añadir una dependencia nueva solo para esto.
+
+REESCRITO (sesión 19-ago-2026, rediseño "Opción A" de resolución
+multi-candidato -- ver CLAUDE.md): las dos herramientas devuelven ahora
+SIEMPRE `{"candidates_found", "candidates_shown", "results": [...]}`,
+nunca el objeto plano de antes. Los 6 tests originales se reescribieron
+para la nueva forma (1 elemento en `results` en el caso común); se
+añadieron 2 tests nuevos para el caso de 2+ candidatos.
 """
 
 import asyncio
@@ -22,7 +29,7 @@ import pytest
 import efsa_rag.mcp.server as mcp_server
 from efsa_rag.graph.build import AnswerResult, ReevaluationStatus
 from efsa_rag.graph.nodes import RetrievedChunk
-from efsa_rag.ingestion.openfoodtox import OpinionReference
+from efsa_rag.ingestion.openfoodtox import OpinionReference, SubstanceCandidate
 from efsa_rag.mcp.server import SAFETY_NOTE, server
 
 
@@ -88,15 +95,20 @@ def test_list_tools_exposes_exactly_the_two_expected_tools_with_schema():
 # --------------------------------------------------------------------- #
 
 
+ASPARTAME_CANDIDATE = SubstanceCandidate(
+    substance_uuid="uuid-aspartame", chemical_name="Aspartame", match_type="exact", match_score=100.0
+)
+
+
 def test_get_reevaluation_status_known_substance_returns_structured_json_without_node4(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Sustancia conocida (aspartamo, stub) -- el JSON estructurado debe
-    reflejar exactamente los campos de OpinionReference, tal cual, sin
-    reformular. `answer_question` se deja como `_exploding`: si
-    get_reevaluation_status pasara por el Nodo 4 (el camino completo),
-    este test fallaría con un AssertionError en vez de con una
-    aserción sobre el JSON -- confirma que el camino parcial
+    """Sustancia conocida (aspartamo, stub, 1 candidato) -- `results`
+    debe tener exactamente 1 elemento, con los campos de OpinionReference
+    tal cual, sin reformular. `answer_question` se deja como
+    `_exploding`: si get_reevaluation_status pasara por el Nodo 4 (el
+    camino completo), este test fallaría con un AssertionError en vez de
+    con una aserción sobre el JSON -- confirma que el camino parcial
     (Nodo 1 + Nodo 3) es de verdad el que se ejecuta."""
     monkeypatch.setattr(
         mcp_server,
@@ -105,6 +117,9 @@ def test_get_reevaluation_status_known_substance_returns_structured_json_without
             substance_name="Aspartame",
             substance_uuid="uuid-aspartame",
             structured_result=ASPARTAME_OPINION,
+            substance_candidates=[ASPARTAME_CANDIDATE],
+            structured_results={"uuid-aspartame": ASPARTAME_OPINION},
+            candidates_total_found=1,
         ),
     )
     monkeypatch.setattr(mcp_server, "answer_question", _exploding)
@@ -113,16 +128,25 @@ def test_get_reevaluation_status_known_substance_returns_structured_json_without
 
     assert result.is_error is False
     assert result.structured_content == {
+        "candidates_found": 1,
+        "candidates_shown": 1,
         "substance_identified": "Aspartame",
-        "dossier_found": True,
-        "dossier_title": ASPARTAME_OPINION.title,
-        "doi": "10.2903/j.efsa.2013.3496",
-        "date_of_evaluation": "2013-11-28",
-        "adi_value": 40.0,
-        "adi_unit": "mg/kg bw/day",
-        "adi_justification": "texto verbatim de JustificationAndComments",
-        "discussion_available": True,
         "safety_note": SAFETY_NOTE,
+        "results": [
+            {
+                "chemical_name": "Aspartame",
+                "match_type": "exact",
+                "match_score": 100.0,
+                "dossier_found": True,
+                "dossier_title": ASPARTAME_OPINION.title,
+                "doi": "10.2903/j.efsa.2013.3496",
+                "date_of_evaluation": "2013-11-28",
+                "adi_value": 40.0,
+                "adi_unit": "mg/kg bw/day",
+                "adi_justification": "texto verbatim de JustificationAndComments",
+                "discussion_available": True,
+            }
+        ],
     }
 
 
@@ -145,6 +169,9 @@ def test_get_reevaluation_status_tier2_without_adi_reports_null_adi_not_invented
         discussion_text="párrafo corto",
         discussion_is_boilerplate=True,
     )
+    tio2_candidate = SubstanceCandidate(
+        substance_uuid="uuid-tio2", chemical_name="Titanium dioxide", match_type="exact", match_score=100.0
+    )
     monkeypatch.setattr(
         mcp_server,
         "resolve_current_opinion",
@@ -152,19 +179,24 @@ def test_get_reevaluation_status_tier2_without_adi_reports_null_adi_not_invented
             substance_name="Titanium dioxide",
             substance_uuid="uuid-tio2",
             structured_result=tio2_opinion,
+            substance_candidates=[tio2_candidate],
+            structured_results={"uuid-tio2": tio2_opinion},
+            candidates_total_found=1,
         ),
     )
     monkeypatch.setattr(mcp_server, "answer_question", _exploding)
 
     result = _call("get_reevaluation_status", {"substance": "titanium dioxide"})
 
-    assert result.structured_content["substance_identified"] == "Titanium dioxide"
-    assert result.structured_content["dossier_found"] is True
-    assert result.structured_content["adi_value"] is None
-    assert result.structured_content["adi_unit"] is None
-    assert result.structured_content["adi_justification"] is None
-    assert result.structured_content["discussion_available"] is False  # boilerplate
-    assert result.structured_content["doi"] == "10.2903/j.efsa.2021.6585"
+    assert result.structured_content["candidates_shown"] == 1
+    item = result.structured_content["results"][0]
+    assert item["chemical_name"] == "Titanium dioxide"
+    assert item["dossier_found"] is True
+    assert item["adi_value"] is None
+    assert item["adi_unit"] is None
+    assert item["adi_justification"] is None
+    assert item["discussion_available"] is False  # boilerplate
+    assert item["doi"] == "10.2903/j.efsa.2021.6585"
 
 
 # --------------------------------------------------------------------- #
@@ -196,6 +228,9 @@ def test_search_efsa_opinion_known_substance_returns_narrative_answer(
             retrieved_chunks=[chunk],
             structured_result=ASPARTAME_OPINION,
             substance_name="Aspartame",
+            substance_candidates=[ASPARTAME_CANDIDATE],
+            structured_results={"uuid-aspartame": ASPARTAME_OPINION},
+            candidates_total_found=1,
         ),
     )
     monkeypatch.setattr(mcp_server, "resolve_current_opinion", _exploding)
@@ -204,11 +239,20 @@ def test_search_efsa_opinion_known_substance_returns_narrative_answer(
 
     assert result.is_error is False
     assert result.structured_content == {
+        "candidates_found": 1,
+        "candidates_shown": 1,
         "substance_identified": "Aspartame",
         "answer": "El ADI de aspartamo es 40 mg/kg pc/día, según el dictamen de 2013...",
-        "dossier_title": ASPARTAME_OPINION.title,
-        "doi": "10.2903/j.efsa.2013.3496",
-        "retrieved_chunks_count": 1,
+        "results": [
+            {
+                "chemical_name": "Aspartame",
+                "match_type": "exact",
+                "match_score": 100.0,
+                "dossier_title": ASPARTAME_OPINION.title,
+                "doi": "10.2903/j.efsa.2013.3496",
+                "retrieved_chunks_count": 1,
+            }
+        ],
     }
 
 
@@ -221,8 +265,9 @@ def test_get_reevaluation_status_unidentified_substance_degrades_gracefully(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """El Nodo 1 no resolvió ninguna sustancia (LLM respondió NONE, o no
-    hubo coincidencia exacta en SUB) -- todos los campos de datos deben
-    ir `None`/`False` explícitos, NUNCA un error ni un valor inventado.
+    hubo ningún candidato ni exacto, ni normalizado, ni fuzzy) --
+    `results` debe venir VACÍO (`[]`), `candidates_found`/
+    `candidates_shown` en 0, NUNCA un error ni un valor inventado.
     `safety_note` se mantiene igualmente (constante fija, no depende de
     haber identificado nada)."""
     monkeypatch.setattr(
@@ -236,16 +281,11 @@ def test_get_reevaluation_status_unidentified_substance_degrades_gracefully(
 
     assert result.is_error is False
     assert result.structured_content == {
+        "candidates_found": 0,
+        "candidates_shown": 0,
         "substance_identified": None,
-        "dossier_found": False,
-        "dossier_title": None,
-        "doi": None,
-        "date_of_evaluation": None,
-        "adi_value": None,
-        "adi_unit": None,
-        "adi_justification": None,
-        "discussion_available": False,
         "safety_note": SAFETY_NOTE,
+        "results": [],
     }
 
 
@@ -256,7 +296,8 @@ def test_search_efsa_opinion_unidentified_substance_degrades_gracefully(
     para producir un mensaje de "no identificado" en vez de fallar (ver
     graph/build.py, `answer_question`/`_route_after_retrieval`); aquí
     solo se comprueba que el wrapper MCP no rompe ese contrato al
-    empaquetar el resultado."""
+    empaquetar el resultado. `results` vacío, no un campo `None`
+    aislado."""
     monkeypatch.setattr(
         mcp_server,
         "answer_question",
@@ -273,9 +314,135 @@ def test_search_efsa_opinion_unidentified_substance_degrades_gracefully(
 
     assert result.is_error is False
     assert result.structured_content == {
+        "candidates_found": 0,
+        "candidates_shown": 0,
         "substance_identified": None,
         "answer": "No he podido identificar de qué aditivo alimentario hablas.",
-        "dossier_title": None,
-        "doi": None,
-        "retrieved_chunks_count": 0,
+        "results": [],
     }
+
+
+# --------------------------------------------------------------------- #
+# Candidatos múltiples -- decisión de producto explícita: `results`
+# NUNCA elige uno en silencio (ver CLAUDE.md, "Opción A" del rediseño).
+# --------------------------------------------------------------------- #
+
+
+DELTA_TOCOPHEROL_OPINION = OpinionReference(
+    dossier_uuid="dossier-tocopherols",
+    date_of_evaluation=date(2015, 9, 9),
+    title=(
+        "Scientific Opinion on the re-evaluation of tocopherol-rich extract (E 306), "
+        "alpha-tocopherol (E 307), gamma-tocopherol (E 308) and delta-tocopherol (E 309) "
+        "as food additives"
+    ),
+    doc_type="EFSA opinion",
+    doi="10.2903/j.efsa.2015.4247",
+    adi_value=None,
+    adi_unit=None,
+    adi_justification=None,
+    discussion_text=None,
+    discussion_is_boilerplate=False,
+)
+GAMMA_TOCOPHEROL_OPINION = OpinionReference(
+    dossier_uuid="dossier-tocopherols",
+    date_of_evaluation=date(2015, 9, 9),
+    title=DELTA_TOCOPHEROL_OPINION.title,
+    doc_type="EFSA opinion",
+    doi="10.2903/j.efsa.2015.4247",
+    adi_value=None,
+    adi_unit=None,
+    adi_justification=None,
+    discussion_text=None,
+    discussion_is_boilerplate=False,
+)
+DELTA_CANDIDATE = SubstanceCandidate(
+    substance_uuid="uuid-delta", chemical_name="Delta-tocopherol", match_type="fuzzy", match_score=69.23
+)
+GAMMA_CANDIDATE = SubstanceCandidate(
+    substance_uuid="uuid-gamma", chemical_name="Gamma-tocopherol", match_type="fuzzy", match_score=69.23
+)
+
+
+def test_get_reevaluation_status_multiple_candidates_returns_all_in_results(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Caso real de esta semana (tocoferol) -- con 2 candidatos, `results`
+    debe traer los 2, NINGUNO elegido en silencio como "el" resultado."""
+    monkeypatch.setattr(
+        mcp_server,
+        "resolve_current_opinion",
+        lambda query: ReevaluationStatus(
+            substance_name="Tocopherol",
+            substance_uuid="uuid-delta",
+            structured_result=DELTA_TOCOPHEROL_OPINION,
+            substance_candidates=[DELTA_CANDIDATE, GAMMA_CANDIDATE],
+            structured_results={
+                "uuid-delta": DELTA_TOCOPHEROL_OPINION,
+                "uuid-gamma": GAMMA_TOCOPHEROL_OPINION,
+            },
+            candidates_total_found=2,
+        ),
+    )
+    monkeypatch.setattr(mcp_server, "answer_question", _exploding)
+
+    result = _call("get_reevaluation_status", {"substance": "tocopherol"})
+
+    assert result.structured_content["candidates_found"] == 2
+    assert result.structured_content["candidates_shown"] == 2
+    names = [item["chemical_name"] for item in result.structured_content["results"]]
+    assert names == ["Delta-tocopherol", "Gamma-tocopherol"]
+
+
+def test_search_efsa_opinion_multiple_candidates_returns_all_in_results(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Mismo caso para el camino completo -- `results` con 2 entradas,
+    `answer` sigue siendo un único texto narrativo compartido (ya trata
+    cada candidato por separado internamente, ver
+    graph/nodes.py::_build_user_prompt)."""
+    chunk_delta = RetrievedChunk(
+        text="fragmento de delta-tocoferol",
+        substance_uuid="uuid-delta",
+        chemical_name="Delta-tocopherol",
+        dossier_uuid="dossier-tocopherols",
+        dossier_title=DELTA_TOCOPHEROL_OPINION.title,
+        substance_resolution_tier=1,
+    )
+    chunk_gamma = RetrievedChunk(
+        text="fragmento de gamma-tocoferol",
+        substance_uuid="uuid-gamma",
+        chemical_name="Gamma-tocopherol",
+        dossier_uuid="dossier-tocopherols",
+        dossier_title=DELTA_TOCOPHEROL_OPINION.title,
+        substance_resolution_tier=1,
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "answer_question",
+        lambda query: AnswerResult(
+            answer="Se han identificado 2 sustancias... (presentadas por separado)",
+            retrieved_chunks=[chunk_delta, chunk_gamma],
+            structured_result=DELTA_TOCOPHEROL_OPINION,
+            substance_name="Tocopherol",
+            substance_candidates=[DELTA_CANDIDATE, GAMMA_CANDIDATE],
+            structured_results={
+                "uuid-delta": DELTA_TOCOPHEROL_OPINION,
+                "uuid-gamma": GAMMA_TOCOPHEROL_OPINION,
+            },
+            candidates_total_found=2,
+        ),
+    )
+    monkeypatch.setattr(mcp_server, "resolve_current_opinion", _exploding)
+
+    result = _call("search_efsa_opinion", {"substance": "tocopherol"})
+
+    assert result.structured_content["candidates_found"] == 2
+    assert result.structured_content["candidates_shown"] == 2
+    results = result.structured_content["results"]
+    assert [item["chemical_name"] for item in results] == ["Delta-tocopherol", "Gamma-tocopherol"]
+    # Cada candidato solo cuenta SUS PROPIOS chunks, no los de todos.
+    assert results[0]["retrieved_chunks_count"] == 1
+    assert results[1]["retrieved_chunks_count"] == 1
+    # `answer` es un único texto compartido, no se duplica ni se parte.
+    assert result.structured_content["answer"] == "Se han identificado 2 sustancias... (presentadas por separado)"

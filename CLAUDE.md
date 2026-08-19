@@ -1253,6 +1253,82 @@ Pendiente, en orden de menor a mayor incertidumbre:
      diff --stat` tras la implementación) -- si algún cambio futuro de
      `graph/build.py` los rompe, es señal de acoplamiento no detectado a
      investigar, no un efecto colateral a parchear sobre la marcha.
+   - **RESUELTO (misma sesión, continuación posterior) -- el "trabajo
+     futuro, no decidido ni empezado" de arriba SÍ se decidió e
+     implementó.** `search_efsa_opinion`/`get_reevaluation_status`
+     devuelven ahora SIEMPRE `{"candidates_found": N, "candidates_shown":
+     M, "results": [...]}` -- 1 elemento en `results` en el caso común,
+     N en el ambiguo, NUNCA un objeto plano con un único resultado
+     elegido en silencio. Tres alternativas evaluadas antes de decidir
+     (mismo nivel de detalle que otras decisiones de este documento):
+     - **(A, elegida) array siempre.** **(B, descartada)** objeto único +
+       campo `candidates` opcional solo si hay ambigüedad. **(C,
+       descartada)** las dos herramientas intactas + una tercera
+       herramienta nueva de desambiguación.
+     - **Por qué A, no solo "no hay cliente real que proteger" --**
+       verificado antes de decidir, no como excusa a posteriori:
+       `server.list_tools()` real muestra que `output_schema` de ambas
+       herramientas es `{"additionalProperties": true}`, SIN ningún
+       campo declarado formalmente -- no hay contrato de esquema MCP
+       que romper con ningún cambio de forma, la "ruptura de
+       compatibilidad" es puramente sobre código de cliente hipotético,
+       no sobre el protocolo en sí. **Pero el motivo de fondo para
+       preferir A sobre B/C es otro, y es el que pesó más: B y C dejan
+       la honestidad ante la ambigüedad como OPCIONAL para el
+       consumidor** -- un cliente que no sepa mirar el campo
+       `candidates` (B), o que nunca llame a la tercera herramienta de
+       desambiguación (C), vuelve a elegir un candidato en silencio sin
+       enterarse de que había otros -- exactamente el problema que el
+       resto del sistema (Nodo 1-4) pasó esta sesión entera eliminando.
+       **Con A, la honestidad es ESTRUCTURAL:** no existe ninguna forma
+       de leer la respuesta sin toparse con el array `results` y su
+       longitud real, sin que el cliente tenga que saber buscar un
+       campo opcional o una herramienta aparte.
+     - **Plumbing nuevo necesario, no solo cambiar `mcp/server.py`:**
+       `GraphState.candidates_total_found: int` (`graph/nodes.py`,
+       poblado en `extract_entity_node` -- el total ANTES del recorte a
+       `MAX_CANDIDATES_SHOWN`, distinto de `candidates_truncated: bool`,
+       que solo dice SI hubo recorte, no CUÁNTOS había). `AnswerResult`
+       gana `candidates_total_found: int = 0` (aditivo). `ReevaluationStatus`
+       (hasta ahora con la forma singular de siempre, `substance_uuid`/
+       `structured_result`) gana los mismos 3 campos plurales que
+       `AnswerResult` ya tenía (`substance_candidates`,
+       `structured_results`, `candidates_total_found`) -- necesarios
+       porque ahora es `get_reevaluation_status` quien los consume
+       directamente, no solo un caller hipotético futuro.
+     - **Forma final de `results[i]`:** `search_efsa_opinion` -- por
+       candidato: `chemical_name`, `match_type`, `match_score`,
+       `dossier_title`, `doi`, `retrieved_chunks_count` (contado por
+       `substance_uuid` sobre `retrieved_chunks`, NO dividido a partes
+       iguales -- cada candidato cuenta solo SUS propios chunks).
+       `answer` se queda FUERA del array, a nivel superior -- sigue
+       siendo un ÚNICO texto narrativo (el Nodo 4 ya trata cada
+       candidato por separado dentro de esa misma prosa, ver
+       `_build_user_prompt`) -- partirlo en N respuestas exigiría N
+       llamadas al LLM, coste innecesario para lo que una sola
+       generación bien diseñada ya resuelve. `get_reevaluation_status`
+       -- por candidato: los mismos campos que antes tenía el objeto
+       plano (`dossier_found`, `dossier_title`, `doi`,
+       `date_of_evaluation`, `adi_value`, `adi_unit`,
+       `adi_justification`, `discussion_available`) más
+       `chemical_name`/`match_type`/`match_score` para identificar cada
+       fila. `safety_note` se queda fuera del array en ambas (constante
+       fija, no varía por candidato).
+     - **Verificado con llamada MCP real, no solo con los tests --
+       tocoferol, no solo aspartamo** (`get_reevaluation_status("tocopherol")`,
+       vía `asyncio.run(server.call_tool(...))`, sin mock):
+       `candidates_found: 4, candidates_shown: 4`, con las 4 variantes
+       reales (Delta/Gamma/DL-alpha/Tocopherol-rich extract) en
+       `results`, mismo orden determinista que el resto del sistema.
+       `search_efsa_opinion("aspartame")` confirma la regresión: sigue
+       dando `candidates_found: 1, candidates_shown: 1`, sin cambio de
+       comportamiento para el caso común.
+     - **`tests/test_mcp_server.py` reescrito por completo para la nueva
+       forma** (los 6 tests existentes, más 2 nuevos para el caso de
+       2+ candidatos, uno por herramienta) -- a diferencia de la sesión
+       anterior, aquí SÍ se tocó el archivo a propósito, porque ahora sí
+       es la forma del propio MCP la que cambió, no un efecto colateral
+       de otro cambio.
    - Detalle completo de la implementación, calibración y verificación:
      `PROGRESS.md`, sesión 19-ago-2026.
    - **Hallazgo real tras implementar, SIN resolver -- pendiente aparte

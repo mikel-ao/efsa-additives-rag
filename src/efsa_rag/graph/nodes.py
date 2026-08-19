@@ -146,6 +146,15 @@ class GraphState(TypedDict, total=False):
     # caso de 1 solo candidato (match exacto, el más común) se comporta
     # igual que antes -- ver `_build_user_prompt`.
     substance_candidates: list[SubstanceCandidate]
+    # Total ANTES del recorte a MAX_CANDIDATES_SHOWN -- ver
+    # `extract_entity_node`. `candidates_truncated` (justo abajo) ya
+    # cubre "¿hubo recorte?" para el aviso del Nodo 4; este campo nuevo
+    # (sesión 19-ago-2026, al rediseñar la salida del MCP con
+    # 'candidates_found'/'candidates_shown') da el NÚMERO exacto, no
+    # solo un booleano -- necesario para que `search_efsa_opinion`/
+    # `get_reevaluation_status` puedan reportar cuántos había en total,
+    # no solo cuántos se muestran.
+    candidates_total_found: int
     # True si `resolve_substance_candidates` encontró más candidatos que
     # MAX_CANDIDATES_SHOWN -- el Nodo 4 lo anuncia explícitamente en la
     # respuesta (nunca en silencio), ver `_build_user_prompt`.
@@ -272,6 +281,7 @@ def extract_entity_node(state: GraphState, deps: NodeDependencies) -> GraphState
         **state,
         "substance_name": substance_name,
         "substance_candidates": candidates,
+        "candidates_total_found": len(all_candidates),
         "candidates_truncated": len(all_candidates) > MAX_CANDIDATES_SHOWN,
     }
 
