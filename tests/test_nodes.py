@@ -177,12 +177,23 @@ def test_format_retrieved_chunks_empty_and_no_structured_result_reports_no_opini
     sustancia", CONDICIONALMENTE falso: cierto solo para el caso de 0
     candidatos, pero reutilizado también aquí sin distinguir el
     contexto). Tampoco debe repetir el bug incondicionalmente falso ya
-    corregido antes ("el corpus no está indexado", nunca cierto)."""
+    corregido antes ("el corpus no está indexado", nunca cierto).
+
+    Segundo ajuste (misma sesión, continuación posterior): el mensaje
+    tampoco debe contener NINGUNA frase que suene a "no se ha
+    identificado la sustancia" (ni siquiera "en el corpus indexado",
+    léxicamente parecida a la del mensaje de 0 candidatos) -- esa
+    afirmación es específicamente falsa aquí, la sustancia SÍ se
+    identificó. Debe afirmarlo explícitamente en su lugar."""
     for chunks in (None, []):
         text = _format_retrieved_chunks(chunks, structured_result=None)
         assert "no está indexado" not in text
         assert "resolver de forma exacta la sustancia" not in text
+        assert "no se ha identificado" not in text.lower()
+        assert "no se ha podido identificar" not in text.lower()
+        assert "corpus indexado" not in text  # frase exclusiva del mensaje de 0 candidatos
         assert "no se ha encontrado ningún dictamen" in text
+        assert "sí se identificó" in text.lower()
 
 
 def test_format_retrieved_chunks_empty_but_structured_result_present_differs():
@@ -244,7 +255,15 @@ def test_build_user_prompt_olive_leaf_extract_real_case_does_not_self_contradict
     # que no pudo resolverse.
     assert "no se ha podido resolver de forma exacta la sustancia" not in prompt
     assert "no se ha encontrado ningún dictamen" in prompt
-    assert "la sustancia fue identificada" in prompt
+    assert "sí se identificó" in prompt.lower()
+    # Segundo ajuste (misma sesión, continuación posterior): tampoco debe
+    # quedar ninguna frase residual que suene a "no identificada", ni la
+    # frase "corpus indexado" (léxicamente exclusiva del mensaje de 0
+    # candidatos) que podía inducir al LLM a mezclar los dos mensajes al
+    # parafrasear.
+    assert "no se ha identificado" not in prompt.lower()
+    assert "no se ha podido identificar" not in prompt.lower()
+    assert "corpus indexado" not in prompt
 
 
 # --------------------------------------------------------------------- #

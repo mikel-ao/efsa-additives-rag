@@ -625,13 +625,29 @@ def _format_retrieved_chunks(
             # CLAUDE.md para la distinción entre este tipo de bug
             # (mensaje reutilizado sin contexto) y el de "corpus no
             # indexado" (mensaje incondicionalmente falso).
+            #
+            # Segundo ajuste (misma sesión, continuación posterior): el
+            # texto de arriba todavía tenía la frase "...en el corpus
+            # indexado", léxicamente muy parecida a la del mensaje de 0
+            # candidatos ("no se ha podido identificar esta sustancia
+            # dentro del corpus indexado", `_format_unresolved_substance_message`)
+            # -- riesgo real de que el LLM, al parafrasear, mezclara las
+            # dos y generara algo como "tampoco se ha identificado esta
+            # sustancia dentro del corpus indexado" para ESTE caso, donde
+            # es falso (la sustancia SÍ se identificó, tier exacto,
+            # score 100). Reescrito para: (a) afirmar la identificación
+            # explícitamente y en primer lugar, sin ambigüedad, y (b) no
+            # repetir la frase "corpus indexado" que solo pertenece al
+            # mensaje del caso distinto (0 candidatos).
             return (
-                "(vacío -- la sustancia fue identificada, pero no se ha "
-                "encontrado ningún dictamen de aditivo alimentario "
-                "vigente para ella en el corpus indexado; puede estar "
-                "fuera del alcance de este programa de reevaluación, o "
-                "evaluada solo bajo otro régimen regulatorio. No hay "
-                "fragmentos narrativos disponibles para esta consulta)"
+                "(vacío -- esta sustancia SÍ se identificó correctamente "
+                "(no hay ninguna duda sobre eso); no se ha encontrado "
+                "ningún dictamen de aditivo alimentario vigente para "
+                "ella -- puede estar fuera del alcance de este programa "
+                "de reevaluación bajo el Reglamento UE 257/2010, o "
+                "evaluada solo bajo otro régimen regulatorio (p. ej. "
+                "pienso animal). No hay fragmentos narrativos "
+                "disponibles para esta consulta)"
             )
         # `structured_result` SÍ existe pero no hay chunks -- causa
         # distinta (el dictamen vigente se resolvió por la cadena de
