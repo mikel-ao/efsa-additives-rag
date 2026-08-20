@@ -2,11 +2,12 @@
 Los 4 nodos del grafo LangGraph. Ver CLAUDE.md y docs/DECISIONES_VERIFICADAS.md
 para el diagrama y el razonamiento de cada decisión.
 
-Estado del desarrollo: esqueleto con contratos de entrada/salida definidos
-y el system prompt del Nodo 4 ya fijado (fue una decisión de diseño
-explícita, no debe quedar a criterio del LLM en tiempo de ejecución).
-La implementación real de las llamadas al LLM (Nodo 1, 3-fallback, 4)
-queda pendiente de conectar con el cliente de DeepSeek.
+Nodo 1 (extracción de entidad) y Nodo 4 (generación) llaman al LLM;
+Nodo 2 (retrieval híbrido) consulta Chroma; Nodo 3 (verificación de
+vigencia) es puramente determinista contra OpenFoodTox. El system
+prompt del Nodo 4 está fijado como constante de módulo, no generado en
+tiempo de ejecución -- es una decisión de diseño explícita (ver
+NODE_4_SAFETY_COMMUNICATION_RULES más abajo).
 """
 
 from __future__ import annotations
@@ -24,8 +25,11 @@ from efsa_rag.ingestion.openfoodtox import (
 from efsa_rag.graph.llm_client import LLMClient
 
 # --------------------------------------------------------------------- #
-# Nodo 4 -- restricción de comunicación de riesgo (decisión de diseño,
-# NO tocar sin volver a discutir el razonamiento científico detrás).
+# Nodo 4 -- restricción de comunicación de riesgo. Fijada como constante
+# de system prompt, no como criterio delegado al LLM en tiempo de
+# ejecución -- el fundamento científico (el ADI es un margen de
+# seguridad, no un umbral de toxicidad) está documentado en CLAUDE.md,
+# restricción no negociable #1.
 # --------------------------------------------------------------------- #
 
 NODE_4_SAFETY_COMMUNICATION_RULES = """\
@@ -57,10 +61,12 @@ Al describir el ADI/TDI de una sustancia y su relación con la salud:
 
 # Reglas de fundamentación del Nodo 4 -- distintas de las reglas de
 # comunicación de riesgo de arriba (esas son sobre CÓMO redactar el ADI;
-# estas son sobre CON QUÉ datos redactar). Separadas porque estas últimas
-# dependen del estado actual del proyecto (Nodo 2 sin implementar todavía,
-# retrieved_chunks casi siempre vacío) y pueden dejar de aplicar cuando
-# haya vector store real -- no tocar NODE_4_SAFETY_COMMUNICATION_RULES.
+# estas son sobre CON QUÉ datos redactar). Separadas en dos bloques
+# porque tienen ciclos de vida distintos: las reglas de comunicación de
+# riesgo son una restricción fija del dominio (no cambian con el estado
+# del retrieval), mientras que estas de fundamentación dependen de qué
+# tan completo esté el contexto recuperado (retrieved_chunks puede venir
+# vacío -- ver hybrid_retrieval_node y la regla 3 de abajo).
 NODE_4_GROUNDING_RULES = """\
 Eres el nodo de generación de un asistente RAG sobre dictámenes de
 reevaluación de aditivos alimentarios de la EFSA.
@@ -95,10 +101,7 @@ NODE_4_SYSTEM_PROMPT = f"{NODE_4_GROUNDING_RULES}\n{NODE_4_SAFETY_COMMUNICATION_
 @dataclass(frozen=True)
 class RetrievedChunk:
     """Contrato de salida del Nodo 2 (retrieval híbrido) hacia el Nodo 4 --
-    fijado en sesión 17-ago-2026 (continuación 7) ANTES de escribir el
-    Nodo 2 (sigue siendo `NotImplementedError` en `hybrid_retrieval_node`),
-    para que no haga falta rehacer este contrato cuando se implemente. Ver
-    CLAUDE.md, "Decisiones de arquitectura ya tomadas", para el
+    ver CLAUDE.md, "Decisiones de arquitectura ya tomadas", para el
     razonamiento completo.
 
     Sustituye a `list[str]` (texto plano sin metadatos) en
@@ -135,8 +138,7 @@ class RetrievedChunk:
 class GraphState(TypedDict, total=False):
     user_query: str
     substance_name: str | None
-    # Sustituye a `substance_uuid: str | None` (sesión 19-ago-2026) --
-    # decisión de producto explícita del usuario, distinta de "elegir el
+    # Sustituye a `substance_uuid: str | None` -- distinta de "elegir el
     # mejor candidato": cuando el Nodo 1 encuentra varios nombres
     # razonablemente parecidos en OpenFoodTox (typo, o un nombre genérico
     # del LLM que no distingue entre variantes reales -- ver
@@ -148,12 +150,10 @@ class GraphState(TypedDict, total=False):
     substance_candidates: list[SubstanceCandidate]
     # Total ANTES del recorte a MAX_CANDIDATES_SHOWN -- ver
     # `extract_entity_node`. `candidates_truncated` (justo abajo) ya
-    # cubre "¿hubo recorte?" para el aviso del Nodo 4; este campo nuevo
-    # (sesión 19-ago-2026, al rediseñar la salida del MCP con
-    # 'candidates_found'/'candidates_shown') da el NÚMERO exacto, no
-    # solo un booleano -- necesario para que `search_efsa_opinion`/
-    # `get_reevaluation_status` puedan reportar cuántos había en total,
-    # no solo cuántos se muestran.
+    # cubre "¿hubo recorte?" para el aviso del Nodo 4; este campo da el
+    # NÚMERO exacto, no solo un booleano -- necesario para que
+    # `search_efsa_opinion`/`get_reevaluation_status` puedan reportar
+    # cuántos había en total, no solo cuántos se muestran.
     candidates_total_found: int
     # True si `resolve_substance_candidates` encontró más candidatos que
     # MAX_CANDIDATES_SHOWN -- el Nodo 4 lo anuncia explícitamente en la
@@ -168,9 +168,9 @@ class GraphState(TypedDict, total=False):
     # reservado/sin consumidor) -- mismo cálculo (`result is None`) que
     # antes, ahora por candidato en vez de global. Sigue sin consumidor
     # aguas abajo -- punto de extensión reservado para el pendiente #6 de
-    # CLAUDE.md (detección real de ambigüedad de vigencia, DIFERIDA, no
-    # confundir con la ambigüedad de RESOLUCIÓN DE NOMBRE que sí se
-    # implementa en esta sesión).
+    # CLAUDE.md (detección real de ambigüedad de vigencia, DIFERIDA; no
+    # confundir con la ambigüedad de RESOLUCIÓN DE NOMBRE, que sí está
+    # implementada vía `substance_candidates`).
     currency_verification_incomplete: dict[str, bool]
     answer: str
 
@@ -197,23 +197,18 @@ class NodeDependencies:
 # Nodo 1 -- extracción de entidad
 # --------------------------------------------------------------------- #
 
-# PRIMERA VEZ que este prompt existe (sesión 18-ago-2026, continuación
-# 7) -- no es una continuación de nada previo, ver CLAUDE.md/PROGRESS.md
-# para la corrección de que este nodo llevaba siendo `NotImplementedError`
-# desde el primer commit del repo pese a documentación previa que decía
-# lo contrario.
-#
 # Salida en una sola línea, sin JSON/tool-calling -- LLMClient.complete()
 # no expone eso (ver graph/llm_client.py), y no hace falta más
 # estructura que un nombre. El nombre debe ser el CANÓNICO EN INGLÉS
 # porque `OpenFoodToxStore.resolve_substance_candidates` busca primero
 # coincidencia EXACTA contra `SUB.ChemicalName` (con normalización de
 # guion/espacio y fallback fuzzy si eso falla, ver ese método y CLAUDE.md,
-# diseño de resolución multi-candidato, sesión 19-ago-2026) -- si el LLM
-# propone un nombre irreconocible incluso para el fuzzy (ej. nombres
-# compuestos exóticos como "Tartaric acid (L(+)-)"), la resolución puede
-# seguir sin encontrar ningún candidato -- comportamiento esperado, no un
-# bug de este nodo.
+# diseño de resolución multi-candidato) -- si el LLM propone un nombre
+# irreconocible incluso para el fuzzy (ej. nombres compuestos exóticos
+# como "Tartaric acid (L(+)-)"), la resolución puede seguir sin encontrar
+# ningún candidato: es un límite conocido de este diseño (dependencia de
+# que el LLM traduzca/normalice bien antes de resolver), no un bug de
+# implementación de este nodo -- ver CLAUDE.md, pendiente #2.
 NODE_1_ENTITY_EXTRACTION_PROMPT = """\
 Identificas de qué aditivo alimentario habla una pregunta de usuario, \
 para un sistema que después consulta una base de datos regulatoria \
@@ -292,30 +287,31 @@ def extract_entity_node(state: GraphState, deps: NodeDependencies) -> GraphState
 
 DEFAULT_RETRIEVAL_K = 5
 # Extremo superior del rango k=3-5 asumido en el cálculo de presupuesto
-# de contexto del Nodo 4 (ver PROGRESS.md, sesión 18-ago-2026: ~150-180
-# tokens/chunk medidos sobre el corpus real, k=3-5 -> ~1.250-2.000
-# tokens de entrada, coste recalculado ~$0.0005-0.0014/consulta,
-# confirmado del mismo orden de magnitud que la estimación previa sin
-# retrieval -- ver CLAUDE.md, "Decisiones de arquitectura ya tomadas").
-# Se fija en 5 (no 3) porque el presupuesto seguía siendo razonable
-# incluso en el extremo superior, y más contexto real reduce el riesgo
-# de que el Nodo 4 tenga que degradar a solo metadatos por falta de
-# fragmentos relevantes. Actúa como TECHO por candidato -- ver
-# `_chunk_budget_per_candidate` para el reparto cuando hay 2+ candidatos.
+# de contexto del Nodo 4 (ver PROGRESS.md: ~150-180 tokens/chunk medidos
+# sobre el corpus real, k=3-5 -> ~1.250-2.000 tokens de entrada, coste
+# recalculado ~$0.0005-0.0014/consulta, mismo orden de magnitud que la
+# estimación previa sin retrieval -- ver CLAUDE.md, "Decisiones de
+# arquitectura ya tomadas"). Se fija en 5 (no 3) porque el presupuesto
+# seguía siendo razonable incluso en el extremo superior, y más contexto
+# real reduce el riesgo de que el Nodo 4 tenga que degradar a solo
+# metadatos por falta de fragmentos relevantes. Actúa como TECHO por
+# candidato -- ver `_chunk_budget_per_candidate` para el reparto cuando
+# hay 2+ candidatos.
 
 # Presupuesto total y suelo mínimo cuando `substance_candidates` tiene más
-# de un elemento (sesión 19-ago-2026, ver CLAUDE.md, diseño de resolución
-# multi-candidato) -- decisión explícita del usuario: reparto con dos
-# topes, NUNCA diluir un candidato por debajo de un k útil.
+# de un elemento (ver CLAUDE.md, diseño de resolución multi-candidato):
+# reparto con dos topes, para no diluir nunca un candidato por debajo de
+# un k útil.
 TOTAL_CHUNK_BUDGET = 15  # mismo orden de magnitud que k=5 * 3 candidatos
 MIN_K_PER_CANDIDATE = 3  # nunca menos que esto por candidato mostrado
 
 
 def _chunk_budget_per_candidate(n_candidates: int) -> int:
     """`k` por candidato cuando hay `n_candidates` sustancias a resolver
-    a la vez. Con 1 candidato da `DEFAULT_RETRIEVAL_K` (comportamiento
-    idéntico al de antes de esta sesión, sin regresión). El presupuesto
-    total (`TOTAL_CHUNK_BUDGET`) se reparte entre los candidatos SIN bajar
+    a la vez. Con 1 candidato da `DEFAULT_RETRIEVAL_K`, el mismo valor
+    que se usaba antes de existir la resolución multi-candidato -- sin
+    regresión para el caso más común. El presupuesto total
+    (`TOTAL_CHUNK_BUDGET`) se reparte entre los candidatos SIN bajar
     nunca de `MIN_K_PER_CANDIDATE` -- si el reparto matemático daría
     menos, es `MAX_CANDIDATES_SHOWN` (en `extract_entity_node`) quien ya
     acotó cuántos candidatos llegan aquí, no esta función la que diluye
@@ -414,9 +410,10 @@ def verify_currency_node(state: GraphState, deps: NodeDependencies) -> GraphStat
     `substance_candidates`).
 
     Se llama UNA VEZ por cada candidato en `substance_candidates` -- con
-    1 solo candidato (el caso común) el comportamiento es idéntico al de
-    antes de esta sesión. `structured_results` es un dict `{substance_uuid:
-    OpinionReference | None}`, no un único resultado.
+    1 solo candidato (el caso común) el comportamiento es el mismo que
+    antes de existir la resolución multi-candidato. `structured_results`
+    es un dict `{substance_uuid: OpinionReference | None}`, no un único
+    resultado.
 
     NO hay todavía ningún fallback a LLM ni detección real de ambigüedad
     de vigencia por sustancia (varias 'EFSA opinion' con fechas muy
@@ -465,9 +462,9 @@ def _format_structured_result(result: OpinionReference | None) -> str:
     if result.adi_value is not None:
         adi_line = f"- ADI: {result.adi_value} {result.adi_unit or '(unidad no disponible)'}"
     else:
-        # NO generalizar el motivo -- verificado sobre el corpus real
-        # (sesión 17-ago-2026, ver CLAUDE.md "Hallazgos verificados"):
-        # de las sustancias sin ADI numérico, la mayoría (gomas, ceras,
+        # El motivo no se puede generalizar -- verificado sobre el
+        # corpus real (ver CLAUDE.md "Hallazgos verificados"): de las
+        # sustancias sin ADI numérico, la mayoría (gomas, ceras,
         # glicerol, plata, oro...) lo tienen por un motivo FAVORABLE (el
         # panel no consideró necesario un límite), y solo alguna (dióxido
         # de titanio) por una preocupación de seguridad concreta
@@ -535,18 +532,17 @@ def _format_structured_result(result: OpinionReference | None) -> str:
 
 # Enlace FIJO a la página general de aditivos alimentarios de EFSA -- NO
 # un buscador con parámetro. Se probó `efsa.europa.eu/en/search?query=...`
-# primero (sesión 19-ago-2026): el parámetro `query=` es real (reaparece
-# en los enlaces internos del propio sitio), pero verificado en
-# NAVEGADOR REAL por el usuario que NO filtra de verdad -- muestra el
-# mismo listado genérico (18.734 resultados, títulos sin relación) para
-# "aspartame" y para una cadena sin sentido. Descartado. Esta URL fija,
-# en cambio, SÍ es la página apropiada (confirmado con `curl`, HTTP 200
-# sin bloqueo -- a diferencia de `/en/search`, que da 403 de CloudFront
-# incluso a un cliente no-navegador) y su contenido es el esperado:
-# landing page de aditivos alimentarios de EFSA, con la cifra de 315
-# sustancias pre-2009 y progreso de reevaluación (misma cifra ya citada
-# en el README de este proyecto), enlaces a OpenEFSA y a los dictámenes
-# del EFSA Journal.
+# primero: el parámetro `query=` es real (reaparece en los enlaces
+# internos del propio sitio), pero verificado en navegador que NO filtra
+# de verdad -- muestra el mismo listado genérico (18.734 resultados,
+# títulos sin relación) tanto para "aspartame" como para una cadena sin
+# sentido. Descartado. Esta URL fija, en cambio, SÍ es la página
+# apropiada (confirmado con `curl`, HTTP 200 sin bloqueo -- a diferencia
+# de `/en/search`, que da 403 de CloudFront incluso a un cliente
+# no-navegador) y su contenido es el esperado: landing page de aditivos
+# alimentarios de EFSA, con la cifra de 315 sustancias pre-2009 y
+# progreso de reevaluación (misma cifra ya citada en el README de este
+# proyecto), enlaces a OpenEFSA y a los dictámenes del EFSA Journal.
 EFSA_FOOD_ADDITIVES_URL = "https://www.efsa.europa.eu/en/topics/topic/food-additives"
 
 
@@ -558,10 +554,10 @@ def _format_unresolved_substance_message(user_query: str) -> str:
 
     NO afirma "esta sustancia no tiene reevaluaciones recientes" -- esa
     frase no es verificable por el sistema y puede ser FALSA: el caso
-    real "plai caramel" (sesión 19-ago-2026) demostró que la sustancia
-    SÍ existía y SÍ tenía un dictamen vigente indexado -- el problema
-    fue de resolución de nombre (sensibilidad al fraseo del Nodo 1, ver
-    CLAUDE.md), no de ausencia real de dictamen. Este mensaje comunica
+    real "plai caramel" demostró que la sustancia SÍ existía y SÍ tenía
+    un dictamen vigente indexado -- el problema fue de resolución de
+    nombre (sensibilidad al fraseo del Nodo 1, ver CLAUDE.md, pendiente
+    #2), no de ausencia real de dictamen. Este mensaje comunica
     la incertidumbre tal cual es -- no se pudo identificar la sustancia
     DENTRO del corpus indexado, sin afirmar nada sobre si existe o no
     fuera de él.
@@ -588,20 +584,18 @@ def _format_unresolved_substance_message(user_query: str) -> str:
 def _format_retrieved_chunks(
     chunks: list[RetrievedChunk] | None, structured_result: OpinionReference | None = None
 ) -> str:
-    """NOTA de contrato (sesión 19-ago-2026, fix del caso "Olive leaf dry
-    extract"): esta función SOLO se llama hoy desde `_build_user_prompt`
-    en las ramas donde YA hay un candidato identificado (1 candidato, o
+    """Contrato: esta función SOLO se llama desde `_build_user_prompt` en
+    las ramas donde YA hay un candidato identificado (1 candidato, o
     dentro del bloque de 2+) -- el caso de 0 candidatos usa
     `_format_unresolved_substance_message` en su lugar, nunca esta
     función. Los dos mensajes de abajo dan por hecho que la sustancia SÍ
-    se identificó -- si en el futuro se añade una llamada desde un
-    contexto sin sustancia identificada, hay que revisar este supuesto
-    primero, no asumir que sigue siendo válido.
+    se identificó; una llamada futura desde un contexto sin sustancia
+    identificada rompería ese supuesto y necesitaría su propio mensaje.
     """
     if not chunks:
         if structured_result is None:
             # Caso real, no hipotético -- "Olive leaf dry extract from O.
-            # europaea L." (sesión 17-ago-2026, ver
+            # europaea L." (ver
             # test_olive_leaf_extract_has_no_real_food_additive_opinion):
             # resuelve por nombre EXACTO en SUB (substance_candidates NO
             # está vacío), pero su única fila en DOSSIER es un dossier de
@@ -609,36 +603,18 @@ def _format_retrieved_chunks(
             # current_reference_value_opinion da None, sin ningún
             # dictamen alimentario real que recuperar.
             #
-            # Bug encontrado y corregido en esta sesión (mismo día que el
-            # de arriba, distinta naturaleza): el texto anterior aquí
-            # decía "no se ha podido resolver de forma exacta la
-            # sustancia mencionada en la pregunta" -- CONDICIONALMENTE
-            # falso, no incondicionalmente falso como el bug de "corpus
-            # no indexado" de más abajo. Era cierto para el caso de 0
-            # candidatos (el motivo original del texto), pero esta
-            # función se reutilizaba SIN distinguir ese caso del de "sí
-            # hay candidato, pero sin dictamen" -- verificado con una
-            # llamada real (pipeline completo, sin mock) que el prompt
-            # resultante se contradecía a sí mismo: la línea "Sustancia
-            # identificada: Olive leaf dry extract..." aparecía justo
-            # encima de una frase que afirmaba lo contrario. Ver
-            # CLAUDE.md para la distinción entre este tipo de bug
-            # (mensaje reutilizado sin contexto) y el de "corpus no
-            # indexado" (mensaje incondicionalmente falso).
-            #
-            # Segundo ajuste (misma sesión, continuación posterior): el
-            # texto de arriba todavía tenía la frase "...en el corpus
-            # indexado", léxicamente muy parecida a la del mensaje de 0
-            # candidatos ("no se ha podido identificar esta sustancia
-            # dentro del corpus indexado", `_format_unresolved_substance_message`)
-            # -- riesgo real de que el LLM, al parafrasear, mezclara las
-            # dos y generara algo como "tampoco se ha identificado esta
-            # sustancia dentro del corpus indexado" para ESTE caso, donde
-            # es falso (la sustancia SÍ se identificó, tier exacto,
-            # score 100). Reescrito para: (a) afirmar la identificación
-            # explícitamente y en primer lugar, sin ambigüedad, y (b) no
-            # repetir la frase "corpus indexado" que solo pertenece al
-            # mensaje del caso distinto (0 candidatos).
+            # El mensaje de este caso (sustancia identificada, pero sin
+            # dictamen vigente) debe distinguirse con cuidado del mensaje
+            # de 0 candidatos (`_format_unresolved_substance_message`,
+            # "no se ha podido identificar esta sustancia dentro del
+            # corpus indexado"): reutilizar esa frase aquí, o incluso una
+            # muy parecida léxicamente, arriesga que el LLM la parafrasee
+            # y afirme -- para una sustancia que SÍ se identificó, tier
+            # exacto, score 100 -- que "tampoco se ha identificado esta
+            # sustancia", que sería falso. Por eso el mensaje de abajo
+            # afirma la identificación explícitamente y en primer lugar,
+            # sin ambigüedad, y evita la frase "corpus indexado" que
+            # pertenece solo al caso de 0 candidatos.
             return (
                 "(vacío -- esta sustancia SÍ se identificó correctamente "
                 "(no hay ninguna duda sobre eso); no se ha encontrado "
@@ -688,9 +664,9 @@ def _chunks_for_substance(chunks: list[RetrievedChunk] | None, substance_uuid: s
 def _single_substance_prompt(query: str, substance: str, structured: str, chunks: str) -> str:
     """Plantilla compartida por el caso de 0 candidatos (`_build_user_prompt`
     con `substance_candidates` vacío) y el de 1 candidato -- mismo formato
-    exacto que antes de la sesión 19-ago-2026 (resolución multi-candidato),
-    sin envoltorio de "candidato 1 de 1", para no regresar el comportamiento
-    ya probado contra la API real (caso aspartamo, Shellac)."""
+    que se usaba antes de existir la resolución multi-candidato, sin
+    envoltorio de "candidato 1 de 1", validado contra llamadas reales a
+    la API (casos aspartamo, Shellac)."""
     return f"""\
 Pregunta del usuario: {query}
 
@@ -714,18 +690,17 @@ def _build_user_prompt(state: GraphState) -> str:
     sustancia se identificó en absoluto. Usa
     `_format_unresolved_substance_message` (enlace fijo a EFSA +
     término del usuario tal cual, ver esa función), NUNCA
-    `_format_retrieved_chunks` -- esa función, desde el fix del caso
-    "Olive leaf dry extract" (sesión 19-ago-2026), da por hecho que YA
-    hay un candidato identificado (ver su propio docstring) -- usarla
-    aquí volvería a introducir la contradicción ya corregida.
+    `_format_retrieved_chunks` -- esa función da por hecho que YA hay un
+    candidato identificado (ver su propio docstring); usarla aquí
+    introduciría una contradicción en el prompt (afirmar identificación
+    donde no la hay).
 
-    Caso de 1 candidato: EXACTAMENTE el mismo formato que antes de la
-    sesión 19-ago-2026 (resolución multi-candidato) -- sin envoltorio de
-    "candidato 1 de 1", para no regresar el comportamiento ya probado
-    contra la API real (caso aspartamo, Shellac).
+    Caso de 1 candidato: el mismo formato que se usaba antes de existir
+    la resolución multi-candidato -- sin envoltorio de "candidato 1 de
+    1", validado contra la API real (casos aspartamo, Shellac).
 
-    Caso de 2+ candidatos: decisión de producto explícita del usuario --
-    nunca se elige uno en silencio, se presentan TODOS por separado, con
+    Caso de 2+ candidatos: nunca se elige uno en silencio, se presentan
+    TODOS por separado, con
     una instrucción incrustada en el propio prompt de usuario (mismo
     patrón que el aviso de tier 3 ya existente, NO una regla nueva de
     NODE_4_GROUNDING_RULES/NODE_4_SAFETY_COMMUNICATION_RULES) pidiendo al
@@ -793,13 +768,13 @@ de riesgo del system prompt."""
 
 
 NODE_4_MAX_TOKENS = 2000
-# Subido de 800 a 2000 (sesión 18-ago-2026) -- verificado con una
-# respuesta real truncada (Shellac, tier 3): finish_reason == 'length',
-# output_tokens == 800 exacto (el tope), cortada a mitad de frase. Ya no
-# hay overhead de reasoning_content ("thinking" desactivado, ver
-# DeepSeekClient) -- este es texto de salida real, así que subir el tope
-# es coste directo, no oculto: ver CLAUDE.md, "Decisiones de arquitectura
-# ya tomadas", para el recálculo de coste/consulta con este valor.
+# Subido de 800 a 2000 tras verificar con una respuesta real truncada
+# (Shellac, tier 3): finish_reason == 'length', output_tokens == 800
+# exacto (el tope), cortada a mitad de frase. Sin overhead de
+# reasoning_content ("thinking" desactivado, ver DeepSeekClient) -- este
+# es texto de salida real, así que subir el tope es coste directo: ver
+# CLAUDE.md, "Decisiones de arquitectura ya tomadas", para el recálculo
+# de coste/consulta con este valor.
 NODE_4_RETRY_MAX_TOKENS = 3500
 # Presupuesto del reintento -- más margen que el default porque solo se
 # gasta en el caso raro (la primera pasada ya se truncó), no en cada
@@ -819,13 +794,13 @@ def generate_answer_node(state: GraphState, deps: NodeDependencies) -> GraphStat
     contenido). Con 2+ candidatos, `_build_user_prompt` presenta cada uno
     por separado -- ver ese docstring para el diseño completo.
 
-    Comprobación de truncamiento (sesión 18-ago-2026, ver CLAUDE.md):
-    si `finish_reason == 'length'`, la respuesta NUNCA se devuelve tal
-    cual -- se reintenta UNA vez con más presupuesto
-    (`NODE_4_RETRY_MAX_TOKENS`), y si sigue truncada incluso así, se le
-    añade una nota visible al final en vez de dejarla cortada a mitad de
-    frase sin ningún aviso (que es exactamente lo que pasaba antes de
-    esta sesión, descubierto con una respuesta real sobre Shellac).
+    Comprobación de truncamiento: si `finish_reason == 'length'`, la
+    respuesta NUNCA se devuelve tal cual -- se reintenta UNA vez con más
+    presupuesto (`NODE_4_RETRY_MAX_TOKENS`), y si sigue truncada incluso
+    así, se le añade una nota visible al final en vez de dejarla cortada
+    a mitad de frase sin ningún aviso (comportamiento detectado con una
+    respuesta real sobre Shellac antes de añadir esta comprobación, ver
+    CLAUDE.md).
     """
     if deps.llm_client is None:
         raise ValueError("Nodo 4 requiere un llm_client configurado en NodeDependencies")

@@ -49,8 +49,8 @@ MD_OUT_PATH = Path(__file__).resolve().parent.parent / "data" / "pdf_download_ch
 
 # DOI/nombre de archivo: lógica compartida con ingestion/pdf_chunking.py
 # (que necesita mapear PDF -> dossier con el mismo criterio), extraída a
-# ingestion/pdf_naming.py en sesión 17-ago-2026 (continuación 12) para no
-# duplicarla -- ver ese módulo para el razonamiento de DOI_PATTERN.
+# ingestion/pdf_naming.py para no duplicarla -- ver ese módulo para el
+# razonamiento de DOI_PATTERN.
 
 
 def _substances_for_dossier(
@@ -59,18 +59,17 @@ def _substances_for_dossier(
     """Sustancias ligadas a este dictamen vía FLEX_SUM.ToxRefValues -- el
     mismo enlace usado en current_reference_value_opinion.
 
-    OJO: se busca por TÍTULO contra `all_dossier_rows` (sin deduplicar),
-    no por el `Document UUID` único que devuelve
+    Se busca por TÍTULO contra `all_dossier_rows` (sin deduplicar), no
+    por el `Document UUID` único que devuelve
     `current_reevaluation_corpus()`/`unique_reevaluation_opinions()` --
     un dictamen de grupo genera varias filas DOSSIER con el mismo
     título y distinto UUID (una por sustancia cubierta), y el enlace
     real hacia FLEX_SUM.ToxRefValues puede estar en una fila HERMANA
     distinta de la que el dedup por título conservó. Mismo bug ya
     encontrado y corregido una vez en current_reevaluation_corpus()
-    (ver CLAUDE.md) -- confirmado aquí de nuevo con el caso de
-    aspartamo antes de fijar esta versión: buscar por el único UUID del
-    corpus daba 0 sustancias, buscar por título entre TODAS las filas
-    encuentra la correcta.
+    (ver CLAUDE.md) -- confirmado con el caso de aspartamo: buscar por
+    el único UUID del corpus daba 0 sustancias, buscar por título entre
+    TODAS las filas encuentra la correcta.
 
     Algunos dictámenes no tienen ningún registro ADI/TDI ligado en
     absoluto (no solo por este problema de UUID -- genuinamente sin
@@ -147,8 +146,8 @@ def main() -> None:
             }
         )
 
-    # Deduplicar por DOI -- encontrado en sesión 17-ago-2026: "Re-evaluation
-    # of saccharin..." aparece dos veces en el xlsx con el mismo DOI
+    # Deduplicar por DOI -- "Re-evaluation of saccharin..." aparece dos
+    # veces en el xlsx con el mismo DOI
     # (10.2903/j.efsa.2024.9044), por una variante de título con una
     # errata de espacio ("and calcium salts" / "andcalcium salts"). Es
     # el mismo documento real -- sin deduplicar, el checklist pediría

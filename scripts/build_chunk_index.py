@@ -7,16 +7,16 @@ Ver src/efsa_rag/ingestion/pdf_chunking.py para la implementación.
 NO toca embeddings ni Chroma -- solo extracción y chunking. Ese paso
 llega después, por separado.
 
-Regla de CLAUDE.md sobre scripts en lote (límite explícito + --dry-run):
-esto no llama al LLM, pero procesa hasta 161 PDFs con parsing de PDF
-(coste de CPU/tiempo real, no de presupuesto de API) -- mismo espíritu,
-para no lanzar por error un procesado completo sin querer.
+Incluye límite explícito + --dry-run por lote: esto no llama al LLM,
+pero procesa hasta 161 PDFs con parsing de PDF (coste de CPU/tiempo
+real, no de presupuesto de API), así que evita lanzar por error un
+procesado completo sin querer.
 
 Uso:
     python scripts/build_chunk_index.py --dry-run
-        Procesa solo los 3 PDF de referencia ya usados en sesiones
-        anteriores para diagnóstico de estructura (corto/statement,
-        largo/fosfatos, mediano/cloruros). No escribe nada en data/.
+        Procesa solo los 3 PDF de referencia usados para diagnóstico de
+        estructura (corto/statement, largo/fosfatos, mediano/cloruros).
+        No escribe nada en data/.
 
     python scripts/build_chunk_index.py --limit N
         Procesa los primeros N dossiers (orden estable de
@@ -64,11 +64,10 @@ BATCH_SIZE = 20
 XLSX_PATH = Path(__file__).resolve().parent.parent / "data" / "raw" / "OFT3_0_export_repository.xlsx"
 PDF_DIR = Path(__file__).resolve().parent.parent / "data" / "raw" / "pdfs"
 
-# Los mismos 3 PDF de referencia usados en la sesión de diagnóstico de
-# estructura (17-ago-2026, continuación 3): corto/statement (que además
-# resultó ser el único caso sin sustancia resoluble por título ni
-# enlace, ver CLAUDE.md), largo/fosfatos (jerarquía numerada de 4
-# niveles + Tabla 5a, el caso que motivó la Opción A de tablas),
+# Los 3 PDF de referencia para diagnóstico de estructura: corto/statement
+# (que además resultó ser el único caso sin sustancia resoluble por
+# título ni enlace, ver CLAUDE.md), largo/fosfatos (jerarquía numerada
+# de 4 niveles + Tabla 5a, el caso que motivó la Opción A de tablas),
 # mediano/cloruros (discussion_is_boilerplate=True en el xlsx pero con
 # discusión sustantiva propia en el PDF).
 REFERENCE_PDF_SUBSTRINGS = ("2011.1996", "j.efsa.2019.5674", "j.efsa.2019.5751")
@@ -139,15 +138,14 @@ def _report_table_leak_check(result: DossierChunkingResult) -> None:
     conocidos): ¿algún chunk EMPIEZA con una leyenda de tabla
     ("Table N: ..."), tal como haría si un bloque de leyenda no
     excluido hubiera sido el primer texto de su sección? Ancla al
-    inicio del chunk (no de cualquier línea interna) -- verificado en
-    sesión que anclar solo al inicio de línea da falsos positivos
-    reales: frases narrativas normales envuelven su línea justo antes de
-    mencionar una tabla por número ("...summarised in\\nTable 1."), lo
-    que no es una leyenda que se haya colado, solo un salto de línea
-    coincidente. Verificación más fuerte y no genérica hecha aparte en
-    sesión (ver PROGRESS.md): para el caso conocido de la Tabla 5a del
-    PDF de fosfatos, se confirmó que ni la leyenda ('Table 5a: Summary
-    of dietary exposure...') ni una fila numérica real de esa tabla
+    inicio del chunk (no de cualquier línea interna) porque anclar solo
+    al inicio de línea da falsos positivos reales: frases narrativas
+    normales envuelven su línea justo antes de mencionar una tabla por
+    número ("...summarised in\\nTable 1."), lo que no es una leyenda
+    que se haya colado, solo un salto de línea coincidente. Para el
+    caso conocido de la Tabla 5a del PDF de fosfatos, se confirmó
+    aparte (ver PROGRESS.md) que ni la leyenda ('Table 5a: Summary of
+    dietary exposure...') ni una fila numérica real de esa tabla
     aparecen en ningún chunk."""
     import re
 
@@ -171,10 +169,9 @@ def _write_jsonl_for_dossier(f, dossier: DossierPdf, result: DossierChunkingResu
     `chunk_group_id` (NO es un campo de `RetrievedChunk`, se añade solo
     aquí en la persistencia) identifica las N copias del MISMO chunk de
     texto que sirven a distintas sustancias, para poder deduplicar en la
-    capa de aplicación -- reconstruido reproduciendo el mismo orden
-    "por chunk, por sustancia resuelta" que ya usa
-    `pdf_chunking.py::chunk_dossier` al construir `retrieved_chunks`, no
-    inventado aparte."""
+    capa de aplicación -- reproduce el mismo orden "por chunk, por
+    sustancia resuelta" que ya usa `pdf_chunking.py::chunk_dossier` al
+    construir `retrieved_chunks`."""
     resolved = result.resolved_substances
     for chunk_idx, chunk in enumerate(result.chunks):
         group_id = f"{dossier.dossier_uuid}#{chunk_idx}"

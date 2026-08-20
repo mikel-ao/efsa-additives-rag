@@ -1,7 +1,7 @@
 """
 Normalización de DOI y nombre de archivo destino para los PDFs del corpus
-de reevaluación -- extraído de scripts/generate_pdf_checklist.py (sesión
-17-ago-2026) para que el chunker (ingestion/pdf_chunking.py) pueda mapear
+de reevaluación -- extraído de scripts/generate_pdf_checklist.py para
+que el chunker (ingestion/pdf_chunking.py) pueda mapear
 cada fila de OpenFoodToxStore.current_reevaluation_corpus() al archivo
 real en data/raw/pdfs/ sin reimplementar esta lógica por segunda vez.
 scripts/generate_pdf_checklist.py sigue siendo la fuente que generó los

@@ -4,15 +4,15 @@ Modelo de embeddings compartido entre el indexado offline
 `graph/build.py`). Ambos DEBEN usar exactamente el mismo backend y el
 mismo archivo de pesos -- si no coinciden, el espacio vectorial de las
 queries en tiempo de consulta no coincide con el de los chunks ya
-indexados (desajuste fp32/int8 detectado y corregido en sesión
-18-ago-2026, ver CLAUDE.md/PROGRESS.md).
+indexados (ver CLAUDE.md/PROGRESS.md para el desajuste fp32/int8 que
+motivó esta restricción).
 
 Backend ONNX + pesos int8 cuantizados, no el backend `torch` por
 defecto -- decisión de memoria: mide ~32% menos RAM que `torch` en el
 experimento aislado, y `torch` sigue siendo dependencia dura del
-paquete `sentence-transformers` de todas formas (confirmado
-desinstalándolo: el import de la librería falla incluso queriendo usar
-solo el backend ONNX) -- el ahorro viene de evitar el "calentamiento"
+paquete `sentence-transformers` de todas formas (el import de la
+librería falla incluso queriendo usar solo el backend ONNX si `torch`
+no está instalado) -- el ahorro viene de evitar el "calentamiento"
 de la primera inferencia de PyTorch en tiempo de consulta, no de dejar
 de cargar `torch`. Requiere el extra `sentence-transformers[onnx]`
 instalado (`optimum` + `onnxruntime` -- este último ya es dependencia

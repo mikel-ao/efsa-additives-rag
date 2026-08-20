@@ -3,17 +3,16 @@ Descarga de los artefactos pesados del deploy (xlsx de OpenFoodTox +
 índice de Chroma) desde almacenamiento externo (MEGA S4, API
 compatible S3) en tiempo de arranque -- NO se versionan en git bajo
 ningún esquema (ni siquiera Git LFS en un repo privado, ver
-CLAUDE.md/PROGRESS.md sesión 18-ago-2026, continuación 21).
+CLAUDE.md).
 
 Motivo: `data/chroma/` contiene texto literal de los chunks de los
 PDFs, no solo embeddings -- casi la mitad del corpus (79/161,
 dictámenes 2007-2016) no tiene ninguna licencia abierta, y la otra
 mitad (CC BY-ND 2016-2025) está pensada para el artículo completo sin
-cambios, no fragmentos. Meter eso en CUALQUIER repo de GitHub
+cambios, no fragmentos. Meter eso en cualquier repo de GitHub
 (público o privado) sería redistribuir contenido con licencia
 restrictiva vía un proveedor (GitHub) fuera del control del proyecto
--- decisión ya tomada, ver CLAUDE.md "Decisiones de arquitectura ya
-tomadas", que este módulo respeta, no reabre.
+-- ver CLAUDE.md, "Decisiones de arquitectura ya tomadas".
 
 Uso: `ensure_deploy_assets_downloaded()` se llama UNA vez, con import
 perezoso, justo antes de que `graph.build` construya el grafo (ver
@@ -21,10 +20,10 @@ perezoso, justo antes de que `graph.build` construya el grafo (ver
 disco (desarrollo local, o un contenedor de deploy que no se ha
 reiniciado desde la última descarga), no toca la red en absoluto.
 
-Credenciales SIEMPRE vía variables de entorno (en Streamlit Community
+Credenciales siempre vía variables de entorno (en Streamlit Community
 Cloud, pegadas en el campo "Secrets" del deploy -- Streamlit las
 expone automáticamente como os.environ además de st.secrets, sin
-código adicional). Nunca hardcodeadas aquí ni en ningún commit.
+código adicional). El código no las hardcodea en ningún punto.
 """
 
 from __future__ import annotations

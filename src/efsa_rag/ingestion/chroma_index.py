@@ -4,9 +4,8 @@ por combinación chunk x sustancia resuelta, ver ingestion/pdf_chunking.py
 y scripts/build_chunk_index.py).
 
 Esquema de metadatos y decisión de excluir `e_number` documentados en
-CLAUDE.md, "Hallazgos verificados" -- ESQUEMA FINAL. No lo reabras sin
-una fuente fiable de E-number a nivel de sustancia (SUB no la tiene,
-confirmado).
+CLAUDE.md, "Hallazgos verificados": SUB no tiene una fuente fiable de
+E-number a nivel de sustancia, así que el esquema no incluye ese campo.
 """
 
 from __future__ import annotations
@@ -32,10 +31,9 @@ def chroma_id(row: dict) -> str:
 def to_chroma_metadata(row: dict, is_group_dossier: bool) -> dict:
     """Convierte una fila de chunks.jsonl al dict de metadatos que
     Chroma acepta -- solo str/int/float/bool, sin `None` (Chroma lanza
-    TypeError con None, verificado directamente en sesión 18-ago-2026,
-    no asumido). Campos con valor None se OMITEN de la clave, no se
-    escriben como None ni como sentinela -- confirmado que Chroma
-    admite metadatos con distintas claves entre documentos de la misma
+    TypeError con None). Campos con valor None se OMITEN de la clave,
+    no se escriben como None ni como sentinela -- Chroma admite
+    metadatos con distintas claves entre documentos de la misma
     colección.
 
     Deliberadamente NO incluye `e_number` -- ver CLAUDE.md, "Hallazgos

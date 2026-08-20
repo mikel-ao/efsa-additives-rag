@@ -4,13 +4,12 @@ de la interfaz LLMClient, no de un proveedor concreto -- así probar Kimi,
 un modelo local (Ollama) u otro proveedor es implementar esta interfaz,
 sin tocar la lógica de los nodos.
 
-Decisión de diseño (ver conversación de arquitectura, agosto 2026):
-DeepSeek subió precios el 16-ago-2026 con tarifas punta/valle, y Kimi
-resultó más caro para el mismo perfil de consulta salvo K3, que iguala
-casi a los modelos de frontera pero a 15-20x el coste de DeepSeek Flash.
-Se mantiene DeepSeek V4-Flash como backend de producción; esta interfaz
-existe precisamente para no quedar atado a esa decisión si cambia el
-panorama de precios otra vez.
+DeepSeek V4-Flash se mantiene como backend de producción: comparado con
+Kimi para el mismo perfil de consulta, Kimi resulta más caro salvo K3,
+que iguala casi a los modelos de frontera pero a 15-20x el coste de
+DeepSeek Flash (tarifas punta/valle de DeepSeek desde su subida de
+precios). Esta interfaz existe precisamente para no quedar atado a esa
+elección si el panorama de precios vuelve a cambiar.
 """
 
 from __future__ import annotations
@@ -29,11 +28,11 @@ class LLMResponse:
     # 'stop' (completado con normalidad), 'length' (cortado por
     # max_tokens -- el texto puede estar incompleto a mitad de frase),
     # u otros valores del proveedor ('content_filter', etc.). `None` si
-    # el backend no lo expone (ver OllamaClient). Añadido en sesión
-    # 18-ago-2026 tras detectar una respuesta real truncada a mitad de
-    # frase (Shellac, tier 3) que se estaba devolviendo al usuario sin
-    # ningún aviso -- ver generate_answer_node, que ahora comprueba
-    # este campo explícitamente antes de dar una respuesta por buena.
+    # el backend no lo expone (ver OllamaClient). Necesario porque una
+    # respuesta truncada a mitad de frase (caso real: Shellac, tier 3)
+    # se devolvía al usuario final sin ningún aviso -- ver
+    # generate_answer_node, que comprueba este campo explícitamente
+    # antes de dar una respuesta por buena.
     finish_reason: str | None = None
 
 
@@ -117,9 +116,9 @@ class DeepSeekClient(LLMClient):
 
 class OllamaClient(LLMClient):
     """Backend local, opcional -- para quien clone el repo y quiera
-    correrlo sin API de pago (coste cero, calidad menor, ver la
-    discusión de diseño en docs/ sobre por qué no es el backend por
-    defecto: seguimiento menos fiable de las reglas del Nodo 4).
+    correrlo sin API de pago (coste cero, calidad menor; no es el
+    backend por defecto porque sigue las reglas del Nodo 4 de forma
+    menos fiable que DeepSeek).
 
     Requiere tener Ollama corriendo localmente (`ollama serve`) y el
     modelo ya descargado (`ollama pull llama3.1` o el que se prefiera).

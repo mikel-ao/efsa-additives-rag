@@ -13,12 +13,10 @@ pytest-asyncio en el proyecto (no está en requirements.txt), se
 invocan con `asyncio.run(...)` dentro de tests síncronos normales, en
 vez de añadir una dependencia nueva solo para esto.
 
-REESCRITO (sesión 19-ago-2026, rediseño "Opción A" de resolución
-multi-candidato -- ver CLAUDE.md): las dos herramientas devuelven ahora
-SIEMPRE `{"candidates_found", "candidates_shown", "results": [...]}`,
-nunca el objeto plano de antes. Los 6 tests originales se reescribieron
-para la nueva forma (1 elemento en `results` en el caso común); se
-añadieron 2 tests nuevos para el caso de 2+ candidatos.
+Las dos herramientas devuelven siempre
+`{"candidates_found", "candidates_shown", "results": [...]}`, nunca un
+objeto plano con un único candidato -- los tests cubren tanto el caso
+de 1 elemento en `results` (el caso común) como el de 2+ candidatos.
 """
 
 import asyncio
@@ -66,9 +64,7 @@ def _call(tool_name: str, arguments: dict):
 
 def test_list_tools_exposes_exactly_the_two_expected_tools_with_schema():
     """Nombres, descripción no vacía, y esquema de parámetros exacto
-    (un único `substance: string` requerido) para las dos herramientas
-    -- el esquema ya revisado y aprobado con el usuario antes de
-    implementar el servidor."""
+    (un único `substance: string` requerido) para las dos herramientas."""
     tools = asyncio.run(server.list_tools())
     tools_by_name = {t.name: t for t in tools}
 
@@ -84,9 +80,8 @@ def test_list_tools_exposes_exactly_the_two_expected_tools_with_schema():
         assert schema["properties"]["substance"]["type"] == "string"
         assert schema["properties"]["substance"]["description"]  # no vacía
 
-        # Salida ESTRUCTURADA (dict[str, Any], no dict a secas) -- ver
-        # PROGRESS.md, verificado explícitamente que hace falta el tipo
-        # parametrizado para que el SDK genere outputSchema.
+        # Salida ESTRUCTURADA (dict[str, Any], no dict a secas) -- el SDK
+        # solo genera outputSchema con el tipo de retorno parametrizado.
         assert tool.output_schema is not None
 
 
@@ -367,8 +362,8 @@ GAMMA_CANDIDATE = SubstanceCandidate(
 def test_get_reevaluation_status_multiple_candidates_returns_all_in_results(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Caso real de esta semana (tocoferol) -- con 2 candidatos, `results`
-    debe traer los 2, NINGUNO elegido en silencio como "el" resultado."""
+    """Con 2 candidatos (tocoferol), `results` debe traer los 2, ninguno
+    elegido en silencio como "el" resultado."""
     monkeypatch.setattr(
         mcp_server,
         "resolve_current_opinion",

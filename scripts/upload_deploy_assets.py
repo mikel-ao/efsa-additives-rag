@@ -1,22 +1,20 @@
 """
-Script MANUAL de un solo uso (por el usuario, en local, con sus propias
-credenciales de MEGA S4) -- empaqueta data/chroma/ en un tarball y sube
-ese tarball + el xlsx de OpenFoodTox al bucket de MEGA S4 desde el que
+Script manual de un solo uso, ejecutado en local con credenciales
+propias de MEGA S4 -- empaqueta data/chroma/ en un tarball y sube ese
+tarball + el xlsx de OpenFoodTox al bucket de MEGA S4 desde el que
 `efsa_rag.deploy_assets.ensure_deploy_assets_downloaded()` los
 descargará en el arranque del deploy real (ver ese módulo y
-CLAUDE.md/PROGRESS.md, sesión 18-ago-2026 continuación 21, para el
-porqué de esta ruta en vez de versionar los datos en git).
+CLAUDE.md/PROGRESS.md para el porqué de esta ruta en vez de versionar
+los datos en git).
 
 Re-ejecutar cada vez que se reindexe el corpus en local y haga falta
 propagar el índice nuevo al deploy -- sustituye los objetos existentes
 en el bucket (mismo nombre, sobrescribe).
 
 No llama a ningún LLM ni hace peticiones en bucle sobre una colección
-de elementos (sube 2 objetos, punto) -- la regla de CLAUDE.md sobre
-límite de iteraciones + --dry-run para scripts que sí hacen eso no
-aplica aquí en sentido estricto, pero se incluye --dry-run de todas
-formas porque sigue siendo una subida de ~600 MB por red que conviene
-poder previsualizar antes de gastar tiempo/cuota de banda ancha.
+de elementos (sube 2 objetos, punto). Aun así incluye --dry-run porque
+sigue siendo una subida de ~600 MB por red que conviene poder
+previsualizar antes de gastar tiempo/cuota de banda ancha.
 
 Uso:
     export MEGA_S4_ENDPOINT_URL=...

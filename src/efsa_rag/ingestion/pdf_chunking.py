@@ -6,7 +6,7 @@ exclusión de tablas, troceo con RecursiveCharacterTextSplitter, y
 resolución de sustancia por dossier en 3 niveles (ver CLAUDE.md,
 "Hallazgos verificados", "Contrato Nodo 2 -> Nodo 4").
 
-Decisiones ya tomadas y NO reabiertas aquí (ver CLAUDE.md):
+Decisiones de diseño (ver CLAUDE.md para el razonamiento completo):
 - Loader: PyMuPDF directo (no el wrapper `PyMuPDFLoader` de
   langchain_community) -- necesitamos acceso a bbox/fuente por span para
   la detección de encabezados y de tablas, que el wrapper no expone.
@@ -19,7 +19,7 @@ Decisiones ya tomadas y NO reabiertas aquí (ver CLAUDE.md):
   extraído vía fuente tipográfica (bold vs regular), no vía regex de
   numeración sobre texto plano (demasiado ruidoso, ver CLAUDE.md).
 
-Hallazgo NUEVO de esta sesión, no documentado antes: para varias de las
+Hallazgo no documentado previamente: para varias de las
 fuentes bold incrustadas de estos PDFs (ej. "AdvTTec80583d.B"), el modo
 "dict"/"rawdict" de PyMuPDF concatena el texto de una línea SIN espacios
 entre palabras (el glifo de espacio no tiene avance en la fuente
@@ -52,8 +52,8 @@ from efsa_rag.ingestion.pdf_naming import clean_doi, destination_filename, e_num
 # Detección de encabezados vía fuente tipográfica
 # ------------------------------------------------------------------ #
 
-# Fuentes bold incrustadas verificadas en los PDFs de referencia (sesión
-# 17-ago-2026, continuación 11): "TimesNewRomanPS-BoldMT" (statement
+# Fuentes bold incrustadas verificadas en los PDFs de referencia:
+# "TimesNewRomanPS-BoldMT" (statement
 # corto) y variantes con sufijo ".B"/".B+..." (AdvTT..., Scientific
 # Opinion largos) -- NINGUNA de las dos usa el bit "bold" del bitfield
 # `flags` de PyMuPDF (verificado: flags=4 para ambas, bit 16 nunca
@@ -79,9 +79,9 @@ REPEATED_BLOCK_MIN_PAGES = 3
 _TABLE_CAPTION_RE = re.compile(r"^\s*table\s*\d+[a-z]?\s*[:.]", re.IGNORECASE)
 
 
-# U+00AD (soft hyphen) -- hallazgo nuevo de la sesión de validación en
-# lote (17/18-ago-2026, continuación 13): los PDF EFSA/Wiley más
-# recientes (2024-2025 en la muestra probada, ausente en TODOS los
+# U+00AD (soft hyphen) -- hallazgo de una validación en lote sobre el
+# corpus completo: los PDF EFSA/Wiley más recientes (2024-2025 en la
+# muestra probada, ausente en TODOS los
 # anteriores a 2024 comprobados) incrustan el carácter de guion suave
 # literalmente en el texto extraído, no solo como punto de corte de
 # línea invisible -- verificado sobre el PDF de acesulfame K (2025):
@@ -261,7 +261,7 @@ DEFAULT_CHUNK_OVERLAP = 150
 # Umbral mínimo de longitud de chunk -- descarta fragmentos casi vacíos
 # (un encabezado seguido inmediatamente de otro encabezado, o un resto
 # de sección de una sola frase corta tras el troceo). Verificado sobre
-# los 2.559 chunks generados en la sesión de validación anterior (6
+# los 2.559 chunks generados en una validación anterior (6
 # PDF): 25 (1,0%) caían por debajo de 50 caracteres, ej. "1 " o
 # fragmentos de una palabra sueltos entre dos secciones -- sin valor de
 # retrieval real, solo ruido en el índice. 50 caracteres elegido porque
@@ -298,7 +298,7 @@ def split_sections(
 
 # ------------------------------------------------------------------ #
 # Resolución de sustancia por dossier -- diseño de 3 niveles, ver
-# CLAUDE.md "Hallazgos verificados" (continuación 6).
+# CLAUDE.md "Hallazgos verificados".
 # ------------------------------------------------------------------ #
 
 # Nombres de sustancia demasiado cortos dan falsos positivos como
@@ -346,8 +346,8 @@ def resolve_dossier_substances(
     como especifica el diseño en CLAUDE.md. `dossier_row_df` es la fila
     de `current_reevaluation_corpus()` para ESTE dossier, ya acotada por
     el llamador (evita recalcular `substances_per_dossier()` sobre el
-    corpus completo -- ~27 s medidos en sesión anterior -- para procesar
-    un único PDF)."""
+    corpus completo -- ~27 s medidos en una prueba anterior -- para
+    procesar un único PDF)."""
     tier1 = store.substances_per_dossier(corpus=dossier_row_df, require_adi=True).get(
         dossier_uuid, []
     )
@@ -455,8 +455,8 @@ def chunk_dossier(
     # contrato actual de RetrievedChunk exige substance_uuid no nulo, no
     # contempla ese caso. Los chunks de texto SÍ existen (`chunks`,
     # devueltos igualmente), solo no hay forma de envolverlos en
-    # RetrievedChunk todavía -- señalado explícitamente en el resumen de
-    # ejecución del script, no una implementación silenciosa.
+    # RetrievedChunk todavía -- el script de indexado reporta este caso
+    # en su resumen de ejecución.
     retrieved_chunks: list[RetrievedChunk] = []
     for chunk in chunks:
         for r in resolved:

@@ -3,17 +3,16 @@ Genera embeddings y puebla Chroma a partir de data/processed/chunks.jsonl
 (pendiente #5 de CLAUDE.md, paso final -- desbloquea el Nodo 2).
 
 Modelo: sentence-transformers/all-MiniLM-L6-v2 (384 dims, local, rápido),
-backend ONNX + pesos int8 cuantizados (ver
-ingestion/embedding_model.py -- decisión de memoria para el deploy,
-sesión 18-ago-2026, corpus reindexado con este mismo backend para que
-no haya desajuste con las queries en producción). Esquema de
-metadatos: ingestion/chroma_index.py (sin `e_number`, ver ese módulo y
-CLAUDE.md para el motivo).
+backend ONNX + pesos int8 cuantizados (ver ingestion/embedding_model.py
+-- decisión de memoria para el deploy; el corpus se reindexa con este
+mismo backend para que no haya desajuste con las queries en
+producción). Esquema de metadatos: ingestion/chroma_index.py (sin
+`e_number`, ver ese módulo y CLAUDE.md para el motivo).
 
-Regla de CLAUDE.md sobre scripts en lote: este SÍ hace falta con
---dry-run/límite explícito -- 67.827 chunks es un procesado real de
-CPU/GPU (embeddings) + escritura en disco (Chroma), no algo para
-lanzar sin medir antes cuánto tarda.
+Incluye un modo de lote de prueba (--test-batch) con límite explícito
+de filas antes de tocar el corpus completo: 67.827 chunks es un
+procesado real de CPU/GPU (embeddings) + escritura en disco (Chroma),
+no algo para lanzar sin medir antes cuánto tarda.
 
 Uso:
     python scripts/build_chroma_index.py --test-batch
@@ -57,16 +56,16 @@ CHROMA_PERSIST_DIR = Path(__file__).resolve().parent.parent / "data" / "chroma"
 COLLECTION_NAME = "efsa_reevaluation_chunks"
 
 # Lote de prueba: aspartamo (tier 1, sustancia única, dossier largo) +
-# tartratos (tier 1, 7 sustancias, dossier de grupo) -- ya procesados y
-# validados en sesiones anteriores, cubren tanto el caso simple como el
-# caso multi-sustancia (N copias por chunk) del esquema de metadatos.
+# tartratos (tier 1, 7 sustancias, dossier de grupo) -- cubren tanto el
+# caso simple como el caso multi-sustancia (N copias por chunk) del
+# esquema de metadatos.
 TEST_BATCH_PDF_FILENAMES = (
     "E951_10.2903_j.efsa.2013.3496.pdf",
     "E334-E335-E336-E337-E354_10.2903_j.efsa.2020.6030.pdf",
 )
 TEST_BATCH_MAX_ROWS = 300
 
-TOTAL_CORPUS_ROWS = 67_827  # ver PROGRESS.md, sesión 18-ago-2026 -- data/processed/chunks.jsonl
+TOTAL_CORPUS_ROWS = 67_827  # ver data/processed/chunks.jsonl
 
 
 def _load_rows(pdf_filenames: tuple[str, ...], max_rows: int) -> list[dict]:

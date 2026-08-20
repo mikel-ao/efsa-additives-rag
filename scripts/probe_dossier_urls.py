@@ -5,13 +5,10 @@ URL resuelve cada DOI y qué tipo de contenido devuelve (PDF directo, página
 HTML de landing, error) -- SIN descargar el cuerpo de la respuesta.
 
 Limitado a un puñado de DOIs de ejemplo (MAX_ITEMS) y con pausa de cortesía
-entre peticiones -- ver CLAUDE.md, "Cómo trabajar en este repo": cualquier
-script que itere sobre un lote de elementos debe tener un límite explícito
-y (cuando aplica) un modo --dry-run. Este script en concreto ya es
-"dry" por construcción -- no escribe ningún PDF a disco, solo inspecciona
-cabeceras -- pero mantiene el flag --dry-run igualmente para que el mismo
-patrón de invocación sirva de plantilla al descargador real que lo
-sustituya.
+entre peticiones. Este script en concreto ya es "dry" por construcción --
+no escribe ningún PDF a disco, solo inspecciona cabeceras -- pero mantiene
+el flag --dry-run igualmente para que el mismo patrón de invocación sirva
+de plantilla al descargador real que lo sustituya.
 
 Uso:
     python scripts/probe_dossier_urls.py            # imprime el plan y lo ejecuta (solo cabeceras, no descarga)
@@ -33,7 +30,8 @@ from efsa_rag.ingestion.openfoodtox import OpenFoodToxStore  # noqa: E402
 
 XLSX_PATH = Path(__file__).resolve().parent.parent / "data" / "raw" / "OFT3_0_export_repository.xlsx"
 
-# Límite explícito -- no ampliar sin revisar también REQUEST_DELAY_SECONDS.
+# Límite explícito, acoplado a REQUEST_DELAY_SECONDS -- ampliar uno sin
+# el otro cambia la carga real sobre el servidor.
 MAX_ITEMS = 5
 REQUEST_DELAY_SECONDS = 1.5
 REQUEST_TIMEOUT_SECONDS = 15

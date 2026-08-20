@@ -7,36 +7,30 @@ lógica de negocio: `search_efsa_opinion` llama a `answer_question`
 narrativo ni generación LLM) -- ambas funciones ya existentes en
 `graph/build.py`.
 
-Diseño original: "search_efsa_opinion y get_reevaluation_status como
-wrapper del grafo compilado". Los nombres y el parámetro único
-`substance` vienen de ese diseño. El esquema completo (tipos,
-descripciones, forma de la salida, y el porqué de los dos caminos de
-ejecución) se revisó explícitamente con el usuario antes de escribir
-este archivo -- ver CLAUDE.md, "Decisiones de arquitectura", sección
-"Dos caminos de ejecución del grafo", para las garantías de seguridad
-de cada uno
-(en particular, por qué saltarse el Nodo 4 en el camino parcial no
-compromete la restricción no negociable #1 sobre comunicación de
-riesgo del ADI/TDI).
+Los nombres y el parámetro único `substance` de ambas herramientas
+siguen el diseño "wrapper fino del grafo compilado" -- ver CLAUDE.md,
+"Decisiones de arquitectura", sección "Dos caminos de ejecución del
+grafo", para las garantías de seguridad de cada uno (en particular, por
+qué saltarse el Nodo 4 en el camino parcial no compromete la
+restricción no negociable #1 sobre comunicación de riesgo del ADI/TDI).
 
-**Salida en ARRAY SIEMPRE (sesión 19-ago-2026, rediseño de resolución
-multi-candidato) -- `{"candidates_found", "candidates_shown", "results":
-[...]}`, con 1 elemento en `results` en el caso común, no un objeto
-plano como antes.** Decidido sobre dos alternativas descartadas (ver
-CLAUDE.md para el detalle completo de las tres, con sus trade-offs):
-(B) objeto único + campo `candidates` opcional solo si hay ambigüedad,
-(C) las dos herramientas intactas + una tercera herramienta nueva de
-desambiguación. Se eligió A -- **no solo porque no hay ningún cliente
-MCP real hoy que proteger (verificado, no un supuesto: `output_schema`
-de ambas herramientas es `{"additionalProperties": true}`, sin ningún
-campo declarado formalmente, así que no hay contrato de esquema que
-romper), sino porque B y C dejan la honestidad ante la ambigüedad como
-OPCIONAL para el consumidor** (un cliente que no sepa mirar el campo
-`candidates`, o que nunca llame a la tercera herramienta, vuelve a
-elegir un candidato en silencio -- exactamente el problema que el resto
-del sistema pasó esta semana entera eliminando). Con A, la honestidad
-es ESTRUCTURAL: no hay ninguna forma de leer la respuesta sin toparse
-con el array `results` y su longitud real.
+**Salida en ARRAY SIEMPRE** -- `{"candidates_found", "candidates_shown",
+"results": [...]}`, con 1 elemento en `results` en el caso común, nunca
+un objeto plano de un único candidato. Alternativas descartadas (ver
+CLAUDE.md para el detalle completo, con sus trade-offs): (B) objeto
+único + campo `candidates` opcional solo si hay ambigüedad, (C) las dos
+herramientas intactas + una tercera herramienta nueva de
+desambiguación. Se eligió A -- no solo porque no hay ningún cliente MCP
+real hoy que proteger (`output_schema` de ambas herramientas es
+`{"additionalProperties": true}`, sin ningún campo declarado
+formalmente, así que no hay contrato de esquema que romper), sino
+porque B y C dejan la honestidad ante la ambigüedad como OPCIONAL para
+el consumidor: un cliente que no sepa mirar el campo `candidates`, o
+que nunca llame a la tercera herramienta, vuelve a elegir un candidato
+en silencio, reintroduciendo el mismo problema que el resto del sistema
+elimina estructuralmente. Con A, la honestidad es ESTRUCTURAL: no hay
+ninguna forma de leer la respuesta sin toparse con el array `results` y
+su longitud real.
 
 Uso: `python -m efsa_rag.mcp.server` (transporte stdio, el estándar
 para clientes MCP locales).

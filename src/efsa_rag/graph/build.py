@@ -36,15 +36,15 @@ datos --
 
 Es decir: el Nodo 4 puede producir una respuesta coherente ("no he
 podido identificar de qué aditivo hablas") sin que haga falta ningún
-código nuevo aquí -- los Nodos 2 y 4 ya se diseñaron pensando en este
-caso en sesiones anteriores. Cortar el grafo antes del Nodo 4 dejaría
-al usuario sin ninguna respuesta en vez de una explicación útil, que es
-peor experiencia y no ahorra ninguna llamada cara (el Nodo 1 ya se
-llamó, que es la única llamada al LLM en el camino corto).
+código adicional aquí -- los Nodos 2 y 4 ya están diseñados para este
+caso. Cortar el grafo antes del Nodo 4 dejaría al usuario final sin
+ninguna respuesta en vez de una explicación útil, que es peor
+experiencia y no ahorra ninguna llamada cara (el Nodo 1 ya se llamó,
+que es la única llamada al LLM en el camino corto).
 
 `currency_verification_incomplete` (poblado solo por el Nodo 3) queda
-sin definir en el camino corto -- verificado que ningún otro nodo lo
-lee, así que no hay efecto secundario por saltárselo.
+sin definir en el camino corto -- ningún otro nodo lo lee, así que no
+hay efecto secundario por saltárselo.
 """
 
 from __future__ import annotations
@@ -161,46 +161,34 @@ class AnswerResult:
     """Salida de `answer_question` -- el texto de respuesta MÁS el
     contexto que lo fundamentó, para poder auditar fundamentación sin
     tener que reproducir el retrieval a mano (ver CLAUDE.md, "Decisiones
-    de arquitectura ya tomadas" -- motivado directamente por una sesión
-    de auditoría real donde hubo que reconstruir `retrieved_chunks` con
-    una llamada aparte a `hybrid_retrieval_node` porque `answer_question`
-    solo devolvía el string).
+    de arquitectura ya tomadas").
 
-    `answer` sigue siendo el texto final de cara al usuario -- esto NO
-    lo sustituye, lo acompaña. `retrieved_chunks`, `structured_result` y
-    `substance_name` son exactamente los mismos valores que vio/produjo
-    el grafo (no una reconstrucción aparte) -- tomados directamente del
-    estado final tras `.invoke(...)`.
+    `answer` es el texto final de cara al usuario. `retrieved_chunks`,
+    `structured_result` y `substance_name` son exactamente los mismos
+    valores que vio/produjo el grafo (no una reconstrucción aparte) --
+    tomados directamente del estado final tras `.invoke(...)`.
+    `substance_name` es necesario para que un caller (ej. la herramienta
+    MCP `search_efsa_opinion`) sepa qué sustancia se identificó sin
+    tener que releer `structured_result.title` (que puede ser `None` si
+    no hay dictamen vigente, aunque la sustancia SÍ se haya identificado
+    -- son señales distintas, no intercambiables).
 
-    `substance_name` añadido (sesión 18-ago-2026, al implementar el
-    servidor MCP) -- ya lo calculaba el Nodo 1 y quedaba en el estado
-    del grafo, solo no se exponía aquí. Necesario para que un caller
-    (ej. la herramienta MCP `search_efsa_opinion`) sepa qué sustancia se
-    identificó sin tener que releer `structured_result.title` (que
-    puede ser `None` si no hay dictamen vigente, aunque la sustancia SÍ
-    se haya identificado -- son señales distintas, no intercambiables).
-
-    `substance_candidates`/`structured_results` AÑADIDOS (sesión
-    19-ago-2026, resolución multi-candidato) -- CAMPOS ADITIVOS con
-    default, colocados DESPUÉS de los 4 campos originales para no romper
-    ningún constructor existente. En esa misma sesión, el servidor MCP
-    (`mcp/server.py`) se dejó DELIBERADAMENTE fuera del cambio -- seguía
-    usando solo `structured_result`/`substance_name` (el candidato top).
-    **ESO YA NO ES CIERTO -- en una sesión posterior (mismo día,
-    continuación), `search_efsa_opinion`/`get_reevaluation_status` se
-    rediseñaron para devolver SIEMPRE un array de resultados
+    `substance_candidates`/`structured_results` son campos aditivos con
+    default, colocados después de los 4 campos originales para no
+    romper ningún constructor existente, y cubren la resolución
+    multi-candidato: `search_efsa_opinion`/`get_reevaluation_status`
+    (`mcp/server.py`) devuelven SIEMPRE un array de resultados
     (`{"candidates_found", "candidates_shown", "results": [...]}`, ver
-    CLAUDE.md) y ahora SÍ consumen `substance_candidates`/
-    `structured_results` directamente, no solo el campo singular.**
+    CLAUDE.md) y consumen estos dos campos plurales directamente.
     `structured_result` (singular) se mantiene por compatibilidad con
-    quien construya `AnswerResult` esperando ese campo (`tests/test_mcp_server.py`
-    sigue construyéndolo directamente en sus stubs, aunque `mcp/server.py`
-    en producción ya no lo lea) -- sigue poblado con el candidato top
+    quien construya `AnswerResult` esperando ese campo (algunos stubs de
+    test lo siguen construyendo directamente, aunque `mcp/server.py` en
+    producción ya no lo lea) -- sigue poblado con el candidato top
     (`candidates[0]`, orden determinista vía `_candidate_sort_key`).
 
-    `candidates_total_found` AÑADIDO en la misma sesión del rediseño del
-    MCP -- el total de candidatos ANTES del recorte a
-    `MAX_CANDIDATES_SHOWN` (ver `GraphState.candidates_total_found`,
+    `candidates_total_found` es el total de candidatos ANTES del
+    recorte a `MAX_CANDIDATES_SHOWN` (ver
+    `GraphState.candidates_total_found`,
     `graph/nodes.py::extract_entity_node`). `len(substance_candidates)`
     por sí solo no basta para que el MCP reporte "candidates_found" de
     forma honesta cuando hubo recorte -- daría el número YA recortado,
@@ -221,14 +209,8 @@ def answer_question(query: str) -> AnswerResult:
     `NodeDependencies` reales (una sola vez, cacheado) y ejecuta el
     grafo completo.
 
-    Devuelve `AnswerResult`, NO un `str` -- cambio de contrato (sesión
-    18-ago-2026, continuación 11) respecto a la versión anterior de esta
-    función. Verificado con `grep` antes del cambio: no había ningún
-    caller real en el repo (`ui/app.py`, tests, scripts) que esperase el
-    `str` de antes -- solo invocaciones manuales sueltas en sesiones de
-    verificación, no código persistido. Si en el futuro `ui/app.py` u
-    otro caller empieza a usar esta función, debe leer `.answer`, no
-    tratar el resultado como string directamente.
+    Devuelve `AnswerResult`, NO un `str` -- cualquier caller debe leer
+    `.answer`, no tratar el resultado como string directamente.
 
     `structured_result` (singular, compatibilidad MCP) se rellena con el
     candidato top de `substance_candidates` -- ver el docstring de
@@ -271,13 +253,11 @@ class ReevaluationStatus:
     `substance_uuid`/`structured_result` (singulares) se quedan con el
     candidato top por compatibilidad hacia atrás con quien ya construya
     esta clase esperando esos dos campos. `substance_candidates`/
-    `structured_results`/`candidates_total_found` AÑADIDOS (sesión
-    19-ago-2026, rediseño de la salida del MCP -- ver CLAUDE.md, "Opción
-    A" del rediseño de `search_efsa_opinion`/`get_reevaluation_status"):
-    ahora es `get_reevaluation_status` quien consume estos campos
-    plurales directamente (ya no solo el singular) -- mismo principio
-    que `AnswerResult`, mismos nombres de campo por consistencia entre
-    las dos clases."""
+    `structured_results`/`candidates_total_found` (ver CLAUDE.md,
+    "Opción A" del rediseño de `search_efsa_opinion`/
+    `get_reevaluation_status`) son los campos que `get_reevaluation_status`
+    consume directamente -- mismo principio que `AnswerResult`, mismos
+    nombres de campo por consistencia entre las dos clases."""
 
     substance_name: str | None
     substance_uuid: str | None
@@ -311,11 +291,11 @@ def resolve_current_opinion(query: str) -> ReevaluationStatus:
 
     Devuelve TODOS los candidatos (`substance_candidates`/
     `structured_results`), no solo el top -- `get_reevaluation_status`
-    (`mcp/server.py`) los usa para construir su array `results` completo
-    desde el rediseño de esta sesión. Los campos singulares
-    (`substance_uuid`/`structured_result`) se mantienen con el candidato
-    top (`candidates[0]`, orden determinista vía `_candidate_sort_key`)
-    por compatibilidad hacia atrás con otros callers.
+    (`mcp/server.py`) los usa para construir su array `results` completo.
+    Los campos singulares (`substance_uuid`/`structured_result`) se
+    mantienen con el candidato top (`candidates[0]`, orden determinista
+    vía `_candidate_sort_key`) por compatibilidad hacia atrás con otros
+    callers.
     """
     global _default_deps
 

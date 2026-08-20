@@ -1,9 +1,9 @@
 """
 UI Streamlit de demo. La lógica de refresco del corpus está bloqueada por
-un candado server-side de 24h (decisión de diseño: ver docs/, Opción A --
-índice de Chroma horneado en el despliegue, este botón NO reindexa en
-caliente en producción, solo comprueba novedades y te avisa a ti para
-reindexar en local y redesplegar).
+un candado server-side de 24h (índice de Chroma horneado en el
+despliegue -- Opción A, ver CLAUDE.md -- este botón NO reindexa en
+caliente en producción, solo comprueba novedades y avisa de que hace
+falta reindexar en local y redesplegar).
 """
 
 from __future__ import annotations
@@ -65,8 +65,7 @@ def _get_client_ip() -> str:
     """Best-effort. API interna no estable -- si falla, cambia entre
     versiones de Streamlit, o devuelve algo que no es un string usable
     (ej. bajo streamlit.testing.v1.AppTest, `session_info.request` no es
-    una request HTTP real -- encontrado midiendo memoria con AppTest en
-    sesión 18-ago-2026, `remote_ip` no era un `str`), degrada a
+    una request HTTP real y `remote_ip` no es un `str`), degrada a
     'unknown' -- el sistema sigue protegido por el límite global, que no
     depende de esto."""
     try:
@@ -167,9 +166,9 @@ def render_disclaimer() -> None:
     )
 
 
-# Verificadas con llamada real a la API antes de añadirse aquí (sesión
-# 19-ago-2026) -- el fraseo en español puede resolver de forma distinta
-# al inglés, no se asume. Las tres devuelven una respuesta coherente:
+# Verificadas con llamada real a la API antes de añadirse aquí -- el
+# fraseo en español puede resolver de forma distinta al inglés, no se
+# asume. Las tres devuelven una respuesta coherente:
 # aspartamo resuelve exacto con ADI numérico, TiO2 resuelve exacto sin
 # ADI (caso conocido), tocoferol dispara la resolución multi-candidato
 # (4 sustancias, ninguna con ADI numérico) -- ejemplo deliberado de un
@@ -203,11 +202,10 @@ def _render_answer(query: str) -> None:
     Antes de tocar `graph.build` (que es lo primero que intenta abrir
     `data/chroma/` y leer el xlsx de OpenFoodTox), se asegura que esos
     dos artefactos existen en disco -- en el deploy real no van en el
-    repo de git (ver `efsa_rag.deploy_assets`, y CLAUDE.md/PROGRESS.md
-    sesión 18-ago-2026 continuación 21 para el motivo de licencia), así
-    que la primera consulta real del contenedor los descarga desde
-    MEGA S4. En desarrollo local, si ya están en disco, esta llamada no
-    toca la red en absoluto."""
+    repo de git (ver `efsa_rag.deploy_assets` y CLAUDE.md para el motivo
+    de licencia), así que la primera consulta real del contenedor los
+    descarga desde MEGA S4. En desarrollo local, si ya están en disco,
+    esta llamada no toca la red en absoluto."""
     from efsa_rag.deploy_assets import ensure_deploy_assets_downloaded
     from efsa_rag.graph.build import answer_question
 

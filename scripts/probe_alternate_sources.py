@@ -7,8 +7,7 @@ ejemplo, SIN descargar el cuerpo de ninguna respuesta.
   (1) efsa.europa.eu/en/efsajournal/pub/<referencia> -- la "referencia"
       es el último segmento numérico del DOI (ej. DOI
       10.2903/j.efsa.2013.3496 -> referencia 3496, confirmado por
-      búsqueda web contra el caso real de aspartamo antes de escribir
-      este script -- no es una suposición sin verificar).
+      búsqueda web contra el caso real de aspartamo).
   (2) PubMed Central (PMC) -- busca el PMCID correspondiente al DOI vía
       la API pública E-utilities de NCBI (esearch, db=pmc), y si lo
       encuentra, comprueba la página del artículo y el patrón de PDF de
@@ -75,8 +74,7 @@ def _clean_doi(raw_doi: str) -> str:
 def _efsa_reference_from_doi(doi: str) -> str | None:
     """Último segmento numérico del DOI -- ej.
     "10.2903/j.efsa.2013.3496" -> "3496". `None` si el DOI no sigue el
-    patrón esperado (no asumir que todos los DOIs de EFSA lo cumplen sin
-    comprobarlo caso a caso)."""
+    patrón esperado -- no todos los DOIs de EFSA lo cumplen."""
     match = re.search(r"\.(\d+)$", doi)
     return match.group(1) if match else None
 

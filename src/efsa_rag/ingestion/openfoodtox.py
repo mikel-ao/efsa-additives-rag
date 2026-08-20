@@ -32,10 +32,9 @@ FOOD_ADDITIVE_TITLE_PHRASE = "food additive"
 # Heurístico de rescate COMPARTIDO por reevaluation_dossiers() y por el
 # filtro de candidatos de current_reference_value_opinion -- extraído a una
 # única función (_is_mistagged_food_additive_reevaluation, más abajo) tras
-# detectar que las dos implementaciones habían divergido una vez ya
-# (sesión 16-ago-2026). MISMA CLASE DE RIESGO que el filtro de corpus de
-# arriba: aproximación verificada contra los casos conocidos, no garantía
-# estructural.
+# detectar que las dos implementaciones habían divergido entre sí. MISMA
+# CLASE DE RIESGO que el filtro de corpus de arriba: aproximación
+# verificada contra los casos conocidos, no garantía estructural.
 #
 # Domain.FoodDomain == FOOD_DOMAIN_VALUE por sí solo no basta: hay
 # follow-ups reales de aditivos alimentarios (plata E 174 2025, sílice
@@ -66,8 +65,8 @@ FOOD_ADDITIVE_TITLE_PHRASE = "food additive"
 # de uno de 2016 ya superado. reevaluation_dossiers() sí exige
 # REEVAL_TITLE_MARKER siempre porque su propósito es distinto (definir el
 # corpus de REEVALUACIONES, no elegir el dictamen vigente de una
-# sustancia) -- no unificar esa diferencia sin volver a verificar contra
-# casos como este.
+# sustancia) -- unificar ambos comportamientos rompería el caso de
+# dióxido de titanio verificado arriba.
 
 # Tipos de documento que SÍ cuentan como dictamen formal para el heurístico
 # de vigencia. Los 'EFSA statement' se excluyen del MAX(fecha) porque pueden
@@ -78,9 +77,9 @@ VALID_OPINION_TYPES = {"EFSA opinion"}
 # Regulación de aditivos para PIENSO ANIMAL (FEEDAP) -- señal estructural
 # para excluir de current_reference_value_opinion dossiers mal etiquetados
 # Domain.FoodDomain == 'food additives' que en realidad son de pienso
-# animal. Investigado y verificado en sesión 17-ago-2026 (ver CLAUDE.md,
-# "Hallazgos verificados" -- bug de Sunset Yellow FCF / Olive leaf dry
-# extract): 2 de 507 filas con Domain.FoodDomain == 'food additives' en
+# animal. Verificado (ver CLAUDE.md, "Hallazgos verificados" -- casos de
+# Sunset Yellow FCF y Olive leaf dry extract): 2 de 507 filas con
+# Domain.FoodDomain == 'food additives' en
 # todo el dataset tienen esta regulación -- Domain.Regulation es más
 # fiable que el texto del título porque es un campo estructural, no un
 # patrón de texto libre. `str.contains` en vez de igualdad exacta porque
@@ -88,8 +87,8 @@ VALID_OPINION_TYPES = {"EFSA opinion"}
 ANIMAL_FEED_REGULATION_MARKER = "1831/2003"
 
 # Patrones alternativos a REEVAL_TITLE_MARKER para reevaluation_dossiers()
-# -- cierre del Grupo A (sesión 17-ago-2026, ver CLAUDE.md "Hallazgos
-# verificados"). Dictámenes vigentes reales de aditivos alimentarios (cada
+# -- cierre del Grupo A (ver CLAUDE.md, "Hallazgos verificados").
+# Dictámenes vigentes reales de aditivos alimentarios (cada
 # uno confirmado como el resultado de current_reference_value_opinion para
 # al menos una sustancia -- TiO2, propionato sódico, rojo remolacha,
 # beta-caroteno, beta-apo-8'-carotenal, Allura Red AC) cuyo título no
@@ -106,8 +105,8 @@ ANIMAL_FEED_REGULATION_MARKER = "1831/2003"
 # "extension of use" (42 en todo el dataset, incluye novel foods bajo
 # Reglamento (UE) 2015/2283 y aditivos de pienso para lechones/salmónidos).
 # No incluye variantes de "extension of use"/"statement on" fuera de
-# food additives+regulación alimentaria -- no ampliar sin repetir esta
-# verificación.
+# food additives+regulación alimentaria -- ampliar el alcance requeriría
+# repetir la verificación de dominio+regulación hecha arriba.
 ADDITIONAL_REEVAL_TITLE_PATTERNS = (
     "extension of use",
     "statement on",
@@ -137,15 +136,16 @@ def _is_mistagged_food_additive_reevaluation(df: pd.DataFrame) -> pd.Series:
 
 
 # Columnas de FLEX_SUM.ToxRefValues para el valor de ADI y su justificación.
-# ADVERTENCIA: nombres confirmados de memoria de una sesión anterior por el
-# usuario (no releídos carácter a carácter contra el xlsx real en esta
-# sesión -- no había export en data/raw/). Verificar en cuanto el xlsx esté
-# disponible: test_flex_sum_toxref_has_expected_adi_columns en
+# ADVERTENCIA: nombres de columna no releídos carácter a carácter contra el
+# xlsx real (sin export disponible en data/raw/ al momento de escribir
+# esto). Verificar en cuanto el xlsx esté disponible:
+# test_flex_sum_toxref_has_expected_adi_columns en
 # tests/test_openfoodtox_joins.py falla con un mensaje claro si alguno de
 # estos tres nombres no existe en la hoja real.
 # No existe un campo estructural "CriticalEndpoint" separado confirmado --
 # JustificationAndComments es texto libre y es el candidato más cercano
-# disponible; no inventar un campo más específico sin verificarlo primero.
+# disponible; cualquier campo más específico requeriría verificación
+# adicional antes de usarse.
 ADI_LOWER_VALUE_COLUMN = "HumanHealthHazardCharacteristics.AcceptableDailyIntake.Adi.lowerValue"
 ADI_UNIT_COLUMN = "HumanHealthHazardCharacteristics.AcceptableDailyIntake.Adi.Unit"
 ADI_JUSTIFICATION_COLUMN = (
@@ -154,10 +154,9 @@ ADI_JUSTIFICATION_COLUMN = (
 
 # DOCUMENT TYPE de DOSSIER_DOCS que enlazan hacia FLEX_SUM.ToxRefValues --
 # mismo literal ya usado en current_reevaluation_corpus(), extraído aquí
-# solo para reutilizarlo en substances_per_dossier() (sesión 17-ago-2026,
-# continuación 4) sin duplicar el literal. No se ha tocado
-# current_reevaluation_corpus() para usar esta constante -- fuera de
-# alcance de esa sesión, ver CLAUDE.md.
+# para reutilizarlo en substances_per_dossier() sin duplicar el literal.
+# current_reevaluation_corpus() sigue con el literal inline, sin migrar a
+# esta constante.
 TOXREF_LINK_DOCUMENT_TYPES = ("FLEXIBLE_SUMMARY", "ToxRefValues")
 
 # Discusión narrativa de END_SUM, ligada al dossier vía el mismo patrón que
@@ -166,28 +165,25 @@ TOXREF_LINK_DOCUMENT_TYPES = ("FLEXIBLE_SUMMARY", "ToxRefValues")
 DISCUSSION_COLUMN = "Discussion.Discussion"
 ENDPOINT_SUMMARY_DOCUMENT_TYPE = "ENDPOINT_SUMMARY"
 
-# Optimización de memoria (sesión 18-ago-2026, continuación 20): cada hoja
-# del xlsx trae muchas más columnas de las que este módulo (o cualquier
-# caller externo verificado) llega a leer -- cargarlas todas con
-# pd.read_excel() sin usecols retiene esas columnas sobrantes en memoria
-# durante toda la vida del proceso (las propiedades son
-# functools.cached_property, no se liberan hasta que el store muere).
+# Optimización de memoria: cada hoja del xlsx trae muchas más columnas de
+# las que este módulo (o cualquier caller externo) llega a leer --
+# cargarlas todas con pd.read_excel() sin usecols retiene esas columnas
+# sobrantes en memoria durante toda la vida del proceso (las propiedades
+# son functools.cached_property, no se liberan hasta que el store muere).
 #
-# Estas listas se derivaron por AUDITORÍA EXPLÍCITA, no por adivinanza:
-# grep de cada acceso `df["..."]` / `df[...]` a las 5 hojas dentro de
-# ingestion/openfoodtox.py, MÁS los callers externos que tocan las mismas
-# hojas directamente vía las propiedades públicas (store.dossier,
-# store.dossier_docs, store.sub, store.flex_sum_toxref) --
-# scripts/generate_pdf_checklist.py, ingestion/pdf_chunking.py
-# (incluida _guess_substance_by_title, el camino de resolución de nivel 3
-# -- la rama menos obvia, con su propio acceso a SUB.ChemicalName/
+# Estas listas se derivaron por auditoría explícita: grep de cada acceso
+# `df["..."]` / `df[...]` a las 5 hojas dentro de ingestion/openfoodtox.py,
+# más los callers externos que tocan las mismas hojas directamente vía las
+# propiedades públicas (store.dossier, store.dossier_docs, store.sub,
+# store.flex_sum_toxref) -- scripts/generate_pdf_checklist.py,
+# ingestion/pdf_chunking.py (incluida _guess_substance_by_title, el camino
+# de resolución de nivel 3, con su propio acceso a SUB.ChemicalName/
 # Document UUID) y tests/test_openfoodtox_joins.py (los 2 tests-canario
 # que comprueban que ADI_*_COLUMN/DISCUSSION_COLUMN siguen existiendo en
-# la hoja real). Ningún caller adicional accede a estas hojas por fuera
-# de esos módulos (verificado con grep sobre todo el repo antes de fijar
-# estas listas). Si se añade un caller nuevo que necesite otra columna,
-# ampliar la lista correspondiente aquí -- un KeyError al leer sería la
-# señal de que se olvidó.
+# la hoja real). Ningún caller adicional accede a estas hojas por fuera de
+# esos módulos (verificado con grep sobre todo el repo). Un caller nuevo
+# que necesite otra columna debe ampliar la lista correspondiente aquí --
+# un KeyError al leer es la señal de que se olvidó.
 DOSSIER_USECOLS = [
     "Document UUID",
     "Domain.FoodDomain",
@@ -218,8 +214,8 @@ END_SUM_USECOLS = [
     DISCUSSION_COLUMN,
 ]
 
-# Heurístico de boilerplate validado sin excepciones encontradas en sesión
-# (ver CLAUDE.md, "Hallazgos verificados"): por debajo de este umbral, el
+# Heurístico de boilerplate validado sin excepciones encontradas (ver
+# CLAUDE.md, "Hallazgos verificados"): por debajo de este umbral, el
 # texto es siempre la frase de apertura del mandato sin contenido
 # sustantivo. Por encima, NO hay garantía de que sea razonamiento real
 # (zona gris sin señal limpia, ej. caso polisorbatos) -- el umbral solo
@@ -290,21 +286,20 @@ class DossierSubstance:
 # WRatio -- WRatio probado y descartado, da falsos positivos graves por
 # coincidencia de substring, ej. "Xylene" -> "Perfluorobutylethylene" al
 # 81,82% frente a ningún candidato con ratio). Calibrado con datos reales
-# contra el universo restringido de 246 sustancias resolubles (sesión
-# 19-ago-2026):
-#   - "Tocopherol" (salida REAL del Nodo 1 para preguntas genéricas de
+# contra el universo restringido de 246 sustancias resolubles:
+#   - "Tocopherol" (salida real del Nodo 1 para preguntas genéricas de
 #     tocoferol, verificado con llamada real a la API): 69,23
 #     Delta-tocopherol, 69,23 Gamma-tocopherol, 62,07 DL-alpha-tocopherol,
 #     60,61 Tocopherol-rich extract -- los 4 caen sobre el umbral; 55,56
 #     Glycerol (sustancia real no relacionada) queda excluido.
 #   - "plai caramel" (typo real): 88,00 Plain caramel, 66,67 Ammonia
 #     caramel, 61,11 Sulphite ammonia caramel -- los 3 caen sobre el
-#     umbral. Trade-off conocido y aceptado, no oculto: para un typo claro
-#     de una sola sustancia, este umbral también incluye sustancias
-#     reales de la misma familia (otros caramelos) -- no es un falso
-#     positivo inventado, son sustancias reales del corpus, pero sí más
-#     candidatos de los estrictamente necesarios. No se persigue un
-#     umbral "perfecto" sin más señal que un ratio de caracteres.
+#     umbral. Trade-off: para un typo claro de una sola sustancia, este
+#     umbral también incluye sustancias reales de la misma familia (otros
+#     caramelos) -- son sustancias reales del corpus, no falsos
+#     positivos, pero sí más candidatos de los estrictamente necesarios.
+#     Un ratio de caracteres por sí solo no da señal suficiente para un
+#     umbral más ajustado.
 #   - Consultas sin relación real ("quantum flux capacitor", "banana
 #     smoothie recipe", "Xylene"): máximo 46-57 sobre el universo
 #     restringido -- ninguna cruza el umbral. Cero falsos positivos
@@ -418,9 +413,9 @@ class OpenFoodToxStore:
 
         Domain.FoodDomain == FOOD_DOMAIN_VALUE + título con
         REEVAL_TITLE_MARKER O uno de ADDITIONAL_REEVAL_TITLE_PATTERNS /
-        SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN (cierre del Grupo A, sesión
-        17-ago-2026 -- ver el comentario largo junto a
-        ADDITIONAL_REEVAL_TITLE_PATTERNS arriba), Y NOT Domain.Regulation
+        SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN (cierre del Grupo A -- ver
+        el comentario largo junto a ADDITIONAL_REEVAL_TITLE_PATTERNS
+        arriba), Y NOT Domain.Regulation
         contiene ANIMAL_FEED_REGULATION_MARKER (verificado sin overlap con
         el filtro anterior: 0 de las filas ya capturadas por
         REEVAL_TITLE_MARKER o por el rescate de dominio tenían regulación
@@ -428,18 +423,17 @@ class OpenFoodToxStore:
         previo, solo cierra la misma clase de fuga que el fix del Grupo B
         en current_reference_value_opinion), MÁS el rescate compartido
         _is_mistagged_food_additive_reevaluation() para dictámenes reales
-        etiquetados con otro Domain.FoodDomain (verificado en sesión
-        16-ago-2026: 18 dictámenes reales -- acesulfamo K E950, sacarina
-        E954, eritritol E968, neotamo E961, plata E174, entre otros --
-        quedaban excluidos sin este rescate; corpus pasa de 118 a 136, y de
-        136 a 162 tras el cierre del Grupo A).
+        etiquetados con otro Domain.FoodDomain (verificado: 18 dictámenes
+        reales -- acesulfamo K E950, sacarina E954, eritritol E968,
+        neotamo E961, plata E174, entre otros -- quedaban excluidos sin
+        este rescate; corpus pasa de 118 a 136, y de 136 a 162 tras el
+        cierre del Grupo A).
 
-        LIMITACIÓN CONOCIDA (documentada en docs/, no oculta): el filtro
-        sigue siendo por patrón de texto en el título, no por un campo
-        estructural fiable al 100% -- MISMA CLASE DE RIESGO que el
-        rescate de dominio, no una garantía nueva. Contrastar contra las
-        calls for data activas de EFSA antes de dar el corpus por
-        cerrado.
+        LIMITACIÓN CONOCIDA (documentada en docs/): el filtro sigue siendo
+        por patrón de texto en el título, no por un campo estructural
+        fiable al 100% -- misma clase de riesgo que el rescate de dominio,
+        no una garantía nueva. El corpus no está contrastado contra las
+        calls for data activas de EFSA.
         """
         df = self.dossier
         is_food_domain = df["Domain.FoodDomain"] == FOOD_DOMAIN_VALUE
@@ -472,18 +466,17 @@ class OpenFoodToxStore:
         _is_mistagged_food_additive_reevaluation, ver
         reevaluation_dossiers), a fecha del export usado en el diseño
         (Dec-2025 cutoff de OpenFoodTox 3.0). Cifra corregida dos veces:
-        118 -> 136 en sesión 16-ago-2026 (rescate de dominio mal
-        etiquetado), 136 -> 162 en sesión 17-ago-2026 (cierre del Grupo A,
-        ver CLAUDE.md, "Hallazgos verificados").
+        118 -> 136 (rescate de dominio mal etiquetado), 136 -> 162 (cierre
+        del Grupo A, ver CLAUDE.md, "Hallazgos verificados").
         """
         df = self.reevaluation_dossiers()
         return df.drop_duplicates(subset=["LiteratureReference.EFSAOutputTitle"])
 
     def current_reevaluation_corpus(self) -> pd.DataFrame:
         """Corpus final para descarga de PDFs: `unique_reevaluation_opinions()`
-        con SUSTITUCIÓN explícita, no unión (investigado y verificado en
-        sesión 17-ago-2026, ver CLAUDE.md "Hallazgos verificados" -- cierre
-        del Grupo A, diagnóstico del "híbrido estrecho").
+        con SUSTITUCIÓN explícita, no unión (ver CLAUDE.md, "Hallazgos
+        verificados" -- cierre del Grupo A, diagnóstico del "híbrido
+        estrecho").
 
         Por qué no basta con unir conjuntos: para 6 sustancias (Sunset
         Yellow FCF E110, sucrose esters E473, rosemary extract E392,
@@ -504,23 +497,22 @@ class OpenFoodToxStore:
         corpus tenía para esa sustancia y añade el vigente -- solo si
         ningún OTRO dossier del corpus con esa sustancia sigue siendo
         vigente para otra sustancia distinta (dossier de grupo
-        compartido). Verificado sin pérdida de cobertura colateral en
-        sesión 17-ago-2026: las 6 sustituciones reales son cada una 1:1
-        (ningún dossier compartido con otra sustancia). Cifra resultante:
-        **162** (mismo total que `unique_reevaluation_opinions()`, 6
-        documentos sustituidos) -- NO 168 (una unión ingenua cuenta 6 de
-        más) ni 143 (una sustitución mal acotada que trate CUALQUIER
-        dossier "ya no vigente para su sustancia" como reemplazable
-        también quita historial legítimo ya cubierto por otro patrón,
-        como el "Re-evaluation of titanium dioxide (E171)" de 2016 --
-        error descartado en esta misma sesión antes de fijar la versión
-        final).
+        compartido). Verificado sin pérdida de cobertura colateral: las 6
+        sustituciones reales son cada una 1:1 (ningún dossier compartido
+        con otra sustancia). Cifra resultante: **162** (mismo total que
+        `unique_reevaluation_opinions()`, 6 documentos sustituidos) -- NO
+        168 (una unión ingenua cuenta 6 de más) ni 143 (una sustitución
+        mal acotada que trate CUALQUIER dossier "ya no vigente para su
+        sustancia" como reemplazable también quita historial legítimo ya
+        cubierto por otro patrón, como el "Re-evaluation of titanium
+        dioxide (E171)" de 2016 -- descartado tras verificar que rompía
+        ese caso).
         """
         base = self.unique_reevaluation_opinions()
         base_uuids = set(base["Document UUID"])
 
-        # OJO: `unique_reevaluation_opinions()` deduplica por TÍTULO, no
-        # por UUID -- un dictamen de grupo (varias sustancias, p.ej.
+        # `unique_reevaluation_opinions()` deduplica por TÍTULO, no por
+        # UUID -- un dictamen de grupo (varias sustancias, p.ej.
         # "Statement on Allura Red AC...") genera varias filas en DOSSIER
         # con el MISMO título pero distinto Document UUID (una por
         # sustancia cubierta), y `drop_duplicates` solo conserva UNA de
@@ -529,9 +521,8 @@ class OpenFoodToxStore:
         # sustancia cuyo enlace vía toxref resuelva a una de las UUIDs
         # DESCARTADAS por el dedup, aunque el título sí esté representado.
         # `all_matched_uuids` usa el conjunto COMPLETO, sin deduplicar
-        # (`reevaluation_dossiers()`), para esta comprobación -- fallo
-        # real encontrado y corregido en esta misma sesión antes de
-        # fijar la versión final (ver CLAUDE.md).
+        # (`reevaluation_dossiers()`), para esta comprobación (ver
+        # CLAUDE.md).
         all_matched_uuids = set(self.reevaluation_dossiers()["Document UUID"])
 
         linked = self.dossier_docs[
@@ -602,12 +593,12 @@ class OpenFoodToxStore:
         concreta que sobrevivió el `drop_duplicates` por título de
         `unique_reevaluation_opinions()`.
 
-        Extraído (sesión 17-ago-2026, continuación 4) del paso intermedio
-        que `current_reevaluation_corpus()` ya calculaba y descartaba
-        internamente para decidir sus 6 sustituciones puntuales (variable
-        `substance_uuids` en esa función) -- NO se ha tocado
-        `current_reevaluation_corpus()` ni `unique_reevaluation_opinions()`
-        para esto, ver CLAUDE.md.
+        Extraído del paso intermedio que `current_reevaluation_corpus()`
+        ya calculaba y descartaba internamente para decidir sus 6
+        sustituciones puntuales (variable `substance_uuids` en esa
+        función). `current_reevaluation_corpus()` y
+        `unique_reevaluation_opinions()` siguen sin usar esta función
+        (ver CLAUDE.md).
 
         Motivo de esta función, con las hojas reales (ver CLAUDE.md,
         "Hallazgos verificados", diagnóstico completo): un dictamen de
@@ -642,8 +633,8 @@ class OpenFoodToxStore:
         Potassium nitrite, Nitrites).
 
         `require_adi=False` -- Nivel 2 del diseño de resolución en 3
-        niveles (ver CLAUDE.md, "Hallazgos verificados", continuación 6):
-        mismo enlace estructural, sin exigir ADI relleno -- misma
+        niveles (ver CLAUDE.md, "Hallazgos verificados"): mismo enlace
+        estructural, sin exigir ADI relleno -- misma
         fiabilidad de IDENTIDAD de sustancia que con `require_adi=True`,
         solo cambia si aporta o no un valor numérico. Resuelve los
         dossiers de sustancia única o multi-sustancia SIN ADI (patrón
@@ -715,9 +706,9 @@ class OpenFoodToxStore:
         """Todas las filas de SUB cuyo ChemicalName coincide (case-insensitive)
         con `name`, como (Document UUID, ChemicalName) -- no solo la primera.
 
-        Extraído de `substance_uuid_by_name` (sesión 19-ago-2026) al
-        descubrir un bug latente real: `SUB.ChemicalName` tiene 9 nombres
-        duplicados con distinto UUID (ej. "Sodium saccharin" x2, una de
+        Extraído de `substance_uuid_by_name` al descubrir un bug latente
+        real: `SUB.ChemicalName` tiene 9 nombres duplicados con distinto
+        UUID (ej. "Sodium saccharin" x2, una de
         ellas dentro del universo de 246 sustancias resolubles del corpus
         de reevaluación) -- `matches.iloc[0]` descartaba la segunda en
         silencio. `substance_uuid_by_name` mantiene su comportamiento
@@ -735,8 +726,8 @@ class OpenFoodToxStore:
         """`{chemical_name: substance_uuid}` para las sustancias con
         dictamen de reevaluación resoluble -- unión de
         `substances_per_dossier(require_adi=False)` sobre
-        `current_reevaluation_corpus()` (246 entradas, verificado sesión
-        19-ago-2026). Universo de búsqueda del tier fuzzy de
+        `current_reevaluation_corpus()` (246 entradas, verificado).
+        Universo de búsqueda del tier fuzzy de
         `resolve_substance_candidates` -- NO el `SUB.ChemicalName`
         completo (7.871 filas, todos los dominios regulatorios de
         OpenFoodTox: pesticidas, veterinaria, contaminantes). Restringir
@@ -762,11 +753,10 @@ class OpenFoodToxStore:
         gana (no se combinan tiers distintos en la misma respuesta):
         1. Exacto (case-insensitive) contra TODO `SUB.ChemicalName`.
         2. Igual, pero probando `name` con espacio<->guion intercambiado --
-           recupera el caso de tocoferol diagnosticado en esta sesión (el
-           LLM del Nodo 1 hyphena de forma inconsistente; la hipótesis de
-           símbolo griego vs. palabra se probó y se descartó con datos
-           reales, ver CLAUDE.md). Sigue siendo coincidencia EXACTA, cero
-           riesgo de ambigüedad nuevo.
+           recupera el caso de tocoferol (el LLM del Nodo 1 hyphena de
+           forma inconsistente; la hipótesis de símbolo griego vs. palabra
+           se probó y se descartó con datos reales, ver CLAUDE.md). Sigue
+           siendo coincidencia EXACTA, cero riesgo de ambigüedad nuevo.
         3. Fuzzy (`rapidfuzz.fuzz.ratio`) contra
            `_resolvable_substance_universe`, admitiendo
            `score >= FUZZY_MATCH_LOW_THRESHOLD`.
@@ -826,7 +816,7 @@ class OpenFoodToxStore:
         """Textos de Discussion.Discussion idénticos en >=2 DOSSIER UUID
         distintos -- una discusión específica de una sustancia no debería
         salir palabra por palabra igual en el dictamen de otra sustancia
-        distinta. Verificado en sesión: un único párrafo administrativo
+        distinta. Verificado: un único párrafo administrativo
         sobre el Reglamento 257/2010 comparte esta característica, en 9
         dossiers, con 518-703 caracteres -- más largo que
         DISCUSSION_BOILERPLATE_LENGTH_THRESHOLD, por eso hace falta esta

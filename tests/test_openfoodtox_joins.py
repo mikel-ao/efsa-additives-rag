@@ -5,8 +5,7 @@ Requiere el xlsx real de OpenFoodTox 3.0 en data/raw/. Se marca `skip`
 automáticamente si no está presente, para no romper CI sin el dataset
 (22.6 MB, no se versiona en el repo).
 
-Caso de referencia: aspartamo (E 951). Verificado manualmente el
-2026-08-14 durante el diseño del proyecto:
+Caso de referencia: aspartamo (E 951):
   5 registros de ADI (40 mg/kg pc/día, sin cambios) enlazan a dictámenes de
   2006-05-03, 2009-01-29, 2009-03-19, 2011-02-25 (statement) y 2013-11-28.
   El resultado esperado, filtrando por Type == 'EFSA opinion' y tomando
@@ -26,10 +25,10 @@ from efsa_rag.ingestion.openfoodtox import (
     OpenFoodToxStore,
 )
 
-# Sustancias del Grupo A (sesión 17-ago-2026, ver CLAUDE.md "Hallazgos
-# verificados"): su dictamen vigente real no contiene "re-evaluation" en el
-# título, así que quedaban fuera de reevaluation_dossiers() hasta el cierre
-# del Grupo A (ADDITIONAL_REEVAL_TITLE_PATTERNS / SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN).
+# Sustancias del Grupo A (ver CLAUDE.md, "Hallazgos verificados"): su
+# dictamen vigente real no contiene "re-evaluation" en el título, así que
+# quedaban fuera de reevaluation_dossiers() hasta ampliar el filtro con
+# ADDITIONAL_REEVAL_TITLE_PATTERNS / SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN.
 GROUP_A_SUBSTANCE_NAMES = (
     "Titanium dioxide",
     "Sodium propionate",
@@ -39,9 +38,8 @@ GROUP_A_SUBSTANCE_NAMES = (
     "Allura Red AC",
 )
 
-# Sustancias del "híbrido estrecho" (sesión 17-ago-2026, ver CLAUDE.md
-# "Hallazgos verificados" -- diagnóstico del híbrido tras el cierre del
-# Grupo A): tienen algún dossier en el corpus por patrón de título, pero
+# Sustancias del "híbrido estrecho" (ver CLAUDE.md, "Hallazgos
+# verificados"): tienen algún dossier en el corpus por patrón de título, pero
 # su dictamen REALMENTE vigente (current_reference_value_opinion) es un
 # documento DISTINTO, no capturado por ningún patrón. current_reevaluation_corpus()
 # debe sustituir el documento viejo por el vigente para cada una, no
@@ -93,10 +91,9 @@ def store() -> OpenFoodToxStore:
 
 
 def test_flex_sum_toxref_has_expected_adi_columns(store: OpenFoodToxStore):
-    """Los nombres de columna de ADI se confirmaron de memoria en una
-    sesión anterior (no releídos carácter a carácter contra el xlsx real
-    hasta que este test corrió con el archivo presente). Si esto falla,
-    el nombre real difiere -- corregir las constantes en
+    """Los nombres de columna de ADI se validan contra el xlsx real al
+    ejecutar este test, no se asumen de memoria. Si esto falla, el
+    nombre real difiere -- corregir las constantes en
     ingestion/openfoodtox.py, no este test.
     """
     columns = set(store.flex_sum_toxref.columns)
@@ -142,14 +139,14 @@ def test_aspartame_current_opinion_is_2013_reevaluation(store: OpenFoodToxStore)
 
 
 def test_propyl_gallate_current_opinion_excludes_animal_feed_dossier(store: OpenFoodToxStore):
-    """Caso de regresión del bug de dominio mixto (sesión 16-ago-2026):
-    propil galato tiene 2 candidatos 'EFSA opinion' -- el dictamen real de
-    aditivo alimentario (E 310, 2014-04-01, Domain.FoodDomain ==
-    'food additives') y un dictamen de seguridad como aditivo de PIENSO
-    ANIMAL (2020-03-17, FEEDAP, Domain.FoodDomain == 'technological
-    additives'), sin relación con el uso alimentario. Antes del fix,
-    MAX(fecha) sin filtrar por dominio devolvía el de pienso animal --
-    contexto regulatorio completamente distinto para la misma sustancia.
+    """Caso de regresión del bug de dominio mixto: propil galato tiene 2
+    candidatos 'EFSA opinion' -- el dictamen real de aditivo alimentario
+    (E 310, 2014-04-01, Domain.FoodDomain == 'food additives') y un
+    dictamen de seguridad como aditivo de PIENSO ANIMAL (2020-03-17,
+    FEEDAP, Domain.FoodDomain == 'technological additives'), sin
+    relación con el uso alimentario. Sin filtrar por dominio, MAX(fecha)
+    devolvía el de pienso animal -- contexto regulatorio completamente
+    distinto para la misma sustancia.
     """
     substance_uuid = store.substance_uuid_by_name("Propyl gallate")
     assert substance_uuid is not None
@@ -163,13 +160,12 @@ def test_propyl_gallate_current_opinion_excludes_animal_feed_dossier(store: Open
 
 
 def test_silver_current_opinion_includes_mistagged_domain_followup(store: OpenFoodToxStore):
-    """Caso de regresión de la CASI-regresión (sesión 16-ago-2026): la
-    plata (E 174) tiene un follow-up de reevaluación real y vigente
-    (2025-03-06, "Follow-up of the re-evaluation of silver (E 174) as a
-    food additive") etiquetado Domain.FoodDomain == 'other:' en vez de
-    'food additives' -- ya mencionado en CLAUDE.md como programa activo.
-    Filtrar candidatos solo por Domain.FoodDomain == 'food additives' (sin
-    la rama de título) descartaría este follow-up y devolvería el dictamen
+    """Caso de regresión de la casi-regresión: la plata (E 174) tiene un
+    follow-up de reevaluación real y vigente (2025-03-06, "Follow-up of
+    the re-evaluation of silver (E 174) as a food additive") etiquetado
+    Domain.FoodDomain == 'other:' en vez de 'food additives'. Filtrar
+    candidatos solo por Domain.FoodDomain == 'food additives' (sin la
+    rama de título) descartaría este follow-up y devolvería el dictamen
     de 2015-12-10, ya superado. Este test bloquea esa regresión.
     """
     substance_uuid = store.substance_uuid_by_name("Silver (Ag)")
@@ -186,8 +182,8 @@ def test_silver_current_opinion_includes_mistagged_domain_followup(store: OpenFo
 def test_sunset_yellow_current_opinion_excludes_feed_regulation_dossier(
     store: OpenFoodToxStore,
 ):
-    """Caso de regresión del bug de Grupo B (sesión 17-ago-2026, ver
-    CLAUDE.md): un dossier de 2022 sobre un aditivo de PIENSO ANIMAL
+    """Caso de regresión del bug de Grupo B: un dossier de 2022 sobre un
+    aditivo de PIENSO ANIMAL
     ("Safety and efficacy of a feed additive consisting of Sunset Yellow
     FCF for cats and dogs, ornamental fish...") está mal etiquetado
     Domain.FoodDomain == 'food additives' pese a tener
@@ -214,8 +210,8 @@ def test_sunset_yellow_current_opinion_excludes_feed_regulation_dossier(
 
 
 def test_olive_leaf_extract_has_no_real_food_additive_opinion(store: OpenFoodToxStore):
-    """Segundo caso del bug de Grupo B (sesión 17-ago-2026): "Olive leaf
-    dry extract from O. europaea L." no tiene NINGÚN dictamen de aditivo
+    """Segundo caso del bug de Grupo B: "Olive leaf dry extract from
+    O. europaea L." no tiene NINGÚN dictamen de aditivo
     alimentario real en el dataset -- su única fila en DOSSIER es un
     dossier de pienso animal ("...used as a sensory additive in feed for
     all animal species", 2020-01-28) mal etiquetado Domain.FoodDomain ==
@@ -243,15 +239,16 @@ def test_olive_leaf_extract_has_no_real_food_additive_opinion(store: OpenFoodTox
 def test_reevaluation_corpus_is_approximately_expected_size(store: OpenFoodToxStore):
     """No es un test de igualdad exacta -- el corpus crece con el tiempo
     (programa de reevaluación sigue activo en 2026). Es una alarma de
-    regresión: si el número cae muy por debajo de lo verificado en sesión
-    17-ago-2026 (162, tras el cierre del Grupo A -- ver CLAUDE.md), algo
-    se ha roto en el filtro, no en los datos de EFSA.
+    regresión: si el número cae muy por debajo del tamaño actual
+    verificado del corpus (162, tras ampliar el filtro con Grupo A),
+    algo se ha roto en el filtro, no en los datos de EFSA.
 
-    Umbral subido de 110 a 130 al corregir 118->136 (sesión 16-ago-2026),
-    y de 130 a 150 al corregir 136->162 (sesión 17-ago-2026, cierre del
-    Grupo A): en ambos casos, con el umbral anterior el test seguía en
-    verde aunque el fix correspondiente se rompiera del todo y el corpus
-    volviera a caer al valor previo -- ya no protegía nada real.
+    El umbral se ha subido dos veces según creció el corpus verificado:
+    de 110 a 130 al pasar de 118 a 136 dictámenes, y de 130 a 150 al
+    pasar de 136 a 162 (cierre del Grupo A). En ambos casos, con el
+    umbral anterior el test seguía en verde aunque el fix correspondiente
+    se rompiera del todo y el corpus volviera a caer al valor previo --
+    ya no protegía nada real.
     """
     unique_opinions = store.unique_reevaluation_opinions()
     assert len(unique_opinions) >= 150, (
@@ -266,8 +263,8 @@ def test_reevaluation_corpus_is_approximately_expected_size(store: OpenFoodToxSt
 def test_group_a_substances_current_opinion_is_in_reevaluation_corpus(
     store: OpenFoodToxStore,
 ):
-    """Caso de regresión del cierre del Grupo A (sesión 17-ago-2026, ver
-    CLAUDE.md): antes de ampliar reevaluation_dossiers() con
+    """Caso de regresión del cierre del Grupo A: antes de ampliar
+    reevaluation_dossiers() con
     ADDITIONAL_REEVAL_TITLE_PATTERNS / SAFETY_ASSESSMENT_FOOD_ADDITIVE_PATTERN,
     el dictamen vigente real de estas 6 sustancias (devuelto por
     current_reference_value_opinion, que nunca exigió "re-evaluation" en
@@ -299,14 +296,12 @@ def test_current_reevaluation_corpus_is_same_size_as_title_corpus(
     NARROW_HYBRID_SUBSTITUTIONS), no los añade -- el tamaño final debe
     seguir siendo 162, igual que unique_reevaluation_opinions(). Si este
     test empieza a fallar con 168, la sustitución se ha roto y ha vuelto
-    a comportarse como una unión de conjuntos (bug ya corregido una vez
-    en sesión 17-ago-2026, ver CLAUDE.md). Si falla con un número mucho
-    más bajo (p.ej. 143), la comprobación de "ya capturado por el filtro
-    de título" está usando el conjunto YA DEDUPLICADO por título en vez
-    del conjunto completo -- un dictamen de grupo (varias filas DOSSIER
-    con el mismo título, distinto Document UUID) da un falso negativo y
-    se sustituyen de más documentos que sí seguían vigentes (otro bug ya
-    corregido una vez, mismo día).
+    a comportarse como una unión de conjuntos. Si falla con un número
+    mucho más bajo (p.ej. 143), la comprobación de "ya capturado por el
+    filtro de título" está usando el conjunto YA DEDUPLICADO por título
+    en vez del conjunto completo -- un dictamen de grupo (varias filas
+    DOSSIER con el mismo título, distinto Document UUID) da un falso
+    negativo y se sustituyen de más documentos que sí seguían vigentes.
     """
     title_corpus = store.unique_reevaluation_opinions()
     final_corpus = store.current_reevaluation_corpus()
@@ -322,8 +317,8 @@ def test_current_reevaluation_corpus_is_same_size_as_title_corpus(
 def test_current_reevaluation_corpus_substitutes_narrow_hybrid_cases(
     store: OpenFoodToxStore,
 ):
-    """Para cada una de las 6 sustancias del híbrido estrecho (sesión
-    17-ago-2026), current_reevaluation_corpus() debe contener el
+    """Para cada una de las 6 sustancias del híbrido estrecho,
+    current_reevaluation_corpus() debe contener el
     dictamen vigente real y NO el documento viejo que
     unique_reevaluation_opinions() tenía para esa sustancia -- una
     sustitución explícita, no una entrada añadida junto a la vieja.
@@ -352,10 +347,10 @@ def test_current_reevaluation_corpus_keeps_substances_already_well_represented(
     "safety assessment...as a food additive" de 2021, ambos ya en el
     corpus) NO deben perder su documento histórico -- solo se sustituye
     cuando el vigente real está genuinamente ausente. Bloquea la
-    regresión encontrada en sesión 17-ago-2026 donde una primera versión
-    de current_reevaluation_corpus() sobre-podaba el corpus a 143
-    quitando documentos históricos legítimos de sustancias como titanio,
-    Allura Red AC o ácido sórbico que ya tenían su vigente representado.
+    regresión donde una primera versión de current_reevaluation_corpus()
+    sobre-podaba el corpus a 143 quitando documentos históricos
+    legítimos de sustancias como titanio, Allura Red AC o ácido sórbico
+    que ya tenían su vigente representado.
     """
     final_titles = set(
         store.current_reevaluation_corpus()["LiteratureReference.EFSAOutputTitle"]
@@ -375,21 +370,20 @@ def test_current_reevaluation_corpus_keeps_substances_already_well_represented(
         )
 
 
-# substances_per_dossier() (sesión 17-ago-2026, continuación 4) -- extraído
-# del paso intermedio que current_reevaluation_corpus() ya calculaba y
-# descartaba internamente. Casos de regresión ver CLAUDE.md, "Hallazgos
-# verificados": nitritos prueba la exclusión de sustancias de referencia
-# toxicológica sin ADI propio (los 17 compuestos N-nitroso NO deben
-# aparecer); tartratos y glutamato prueban que se recuperan TODAS las
-# sustancias de un dictamen de grupo, no solo la que sobrevive el
-# drop_duplicates por título de unique_reevaluation_opinions().
+# substances_per_dossier() -- extraído del paso intermedio que
+# current_reevaluation_corpus() ya calculaba y descartaba internamente.
+# Casos de regresión (ver CLAUDE.md, "Hallazgos verificados"): nitritos
+# prueba la exclusión de sustancias de referencia toxicológica sin ADI
+# propio (los 17 compuestos N-nitroso NO deben aparecer); tartratos y
+# glutamato prueban que se recuperan TODAS las sustancias de un dictamen
+# de grupo, no solo la que sobrevive el drop_duplicates por título de
+# unique_reevaluation_opinions().
 #
-# OJO al leer los números: en el diagnóstico de la sesión anterior se
-# reportaron "6 perdidas" (tartratos) y "5 perdidas" (glutamato) -- esas
-# cifras son sustancias INVISIBLES tras el dedup (unión menos la 1 que
-# sobrevive), no el total. El total real (lo que debe devolver esta
-# función) es 7 para tartratos y 6 para glutamato -- verificado contra las
-# hojas reales antes de fijar estos tests, no una suposición.
+# Los números de "sustancias perdidas" reportados en otros diagnósticos
+# ("6 perdidas" para tartratos, "5 perdidas" para glutamato) cuentan las
+# sustancias INVISIBLES tras el dedup (unión menos la 1 que sobrevive),
+# no el total. El total real que debe devolver esta función es 7 para
+# tartratos y 6 para glutamato, contra las hojas reales del xlsx.
 
 
 def test_substances_per_dossier_nitrites_excludes_toxicological_references(
@@ -483,12 +477,11 @@ def test_substances_per_dossier_glutamates_group_returns_all_six(
 
 
 # --------------------------------------------------------------------- #
-# resolve_substance_candidates() -- resolución multi-candidato (sesión
-# 19-ago-2026, ver CLAUDE.md, diseño de resolución multi-candidato).
-# Los números de score citados en los asserts vienen de la calibración
-# real contra el universo de 246 sustancias resolubles hecha en esa
-# sesión -- si cambian, es señal de que el universo o el corpus
-# cambiaron, no que el test esté mal.
+# resolve_substance_candidates() -- resolución multi-candidato (ver
+# CLAUDE.md, diseño de resolución multi-candidato). Los números de
+# score citados en los asserts vienen de la calibración real contra el
+# universo de 246 sustancias resolubles -- si cambian, es señal de que
+# el universo o el corpus cambiaron, no que el test esté mal.
 # --------------------------------------------------------------------- #
 
 
@@ -507,8 +500,8 @@ def test_resolve_substance_candidates_exact_match_unchanged(store: OpenFoodToxSt
 def test_resolve_substance_candidates_normalizes_hyphen_space_mismatch(
     store: OpenFoodToxStore,
 ):
-    """Diagnóstico de tocoferol (sesión 19-ago-2026): la hipótesis del
-    símbolo griego (alpha/beta/gamma vs. α/β/γ) se probó y se descartó
+    """Diagnóstico de tocoferol: la hipótesis del símbolo griego
+    (alpha/beta/gamma vs. α/β/γ) se probó y se descartó
     con datos reales -- SUB no tiene ninguna fila de tocoferol con
     símbolo griego. La causa real es que el Nodo 1 (LLM) hyphena de
     forma inconsistente ("Alpha tocopherol" sin guion, mientras SUB solo
@@ -540,12 +533,12 @@ def test_resolve_substance_candidates_typo_resolves_via_fuzzy(store: OpenFoodTox
 def test_resolve_substance_candidates_generic_tocopherol_returns_multiple(
     store: OpenFoodToxStore,
 ):
-    """'Tocopherol' (salida REAL del Nodo 1 para preguntas genéricas de
-    tocoferol, verificado con llamada real a la API en esta sesión) no
-    coincide con ninguna de las 7 filas reales de SUB (todas con
-    prefijo) -- debe devolver VARIOS candidatos plausibles, nunca elegir
-    uno en silencio. Los 4 esperados son los mismos 4 de la calibración
-    real de esta sesión."""
+    """'Tocopherol' (salida real del Nodo 1 para preguntas genéricas de
+    tocoferol, confirmada con llamada real a la API) no coincide con
+    ninguna de las 7 filas reales de SUB (todas con prefijo) -- debe
+    devolver VARIOS candidatos plausibles, nunca elegir uno en silencio.
+    Los 4 esperados son los mismos 4 obtenidos en la calibración real
+    contra el corpus."""
     candidates = store.resolve_substance_candidates("Tocopherol")
     names = {c.chemical_name for c in candidates}
 
@@ -558,7 +551,7 @@ def test_resolve_substance_candidates_generic_tocopherol_returns_multiple(
     assert all(c.match_type == "fuzzy" for c in candidates)
     assert all(c.match_score >= FUZZY_MATCH_LOW_THRESHOLD for c in candidates)
     # "Glycerol" (sustancia real no relacionada) debe quedar excluido --
-    # verificado en la calibración que da 55,56, por debajo del umbral.
+    # score real 55,56, por debajo del umbral.
     assert "Glycerol" not in names
 
 
@@ -567,8 +560,8 @@ def test_resolve_substance_candidates_tocopherol_tie_break_is_deterministic(
 ):
     """Desempate determinista (_candidate_sort_key, ver CLAUDE.md, punto
     5 del diseño de resolución multi-candidato): Delta-tocopherol y
-    Gamma-tocopherol empatan EXACTO a score (69,23, verificado en la
-    calibración real) -- el orden debe ser siempre el mismo, con
+    Gamma-tocopherol empatan exacto a score (69,23) -- el orden debe
+    ser siempre el mismo, con
     Delta-tocopherol primero (orden alfabético del nombre como
     desempate, "d" < "g"). Repetido varias veces para confirmar que no
     es un orden accidental de un único run."""
@@ -583,8 +576,8 @@ def test_resolve_substance_candidates_unrelated_query_returns_empty(
     store: OpenFoodToxStore,
 ):
     """Consultas sin relación real con ninguna sustancia del corpus deben
-    devolver una lista vacía -- cero falsos positivos, verificado en la
-    calibración real (máximo 46-57 sobre el universo restringido, por
+    devolver una lista vacía -- cero falsos positivos en la calibración
+    contra el universo restringido (score máximo observado 46-57, por
     debajo del umbral de 60)."""
     for query in ("quantum flux capacitor", "banana smoothie recipe"):
         assert store.resolve_substance_candidates(query) == []
@@ -593,8 +586,8 @@ def test_resolve_substance_candidates_unrelated_query_returns_empty(
 def test_resolve_substance_candidates_recovers_duplicate_chemical_name(
     store: OpenFoodToxStore,
 ):
-    """Bug latente corregido en esta sesión: SUB.ChemicalName tiene 9
-    nombres duplicados con distinto UUID -- 'Sodium saccharin' es uno de
+    """SUB.ChemicalName tiene 9 nombres duplicados con distinto UUID --
+    'Sodium saccharin' es uno de
     ellos y SÍ está en el universo de 246 sustancias resolubles.
     substance_uuid_by_name (sin cambios) solo devuelve el primero;
     resolve_substance_candidates debe devolver AMBOS."""

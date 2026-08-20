@@ -12,7 +12,7 @@ Nodo 2.
 
 Los tests de `hybrid_retrieval_node` (Nodo 2) requieren el índice Chroma
 real ya poblado en data/chroma/ (ver scripts/build_chroma_index.py
---all, sesión 18-ago-2026) -- se saltan si no está presente, mismo
+--all) -- se saltan si no está presente, mismo
 patrón. Corren una consulta REAL contra el índice completo (67.827
 chunks), no un mock -- verifican comportamiento real de recuperación,
 no solo que el código no lance una excepción.
@@ -29,10 +29,9 @@ Los tests de `generate_answer_node` (Nodo 4) usan un `_StubLLMClient`
 secuencia fija de `LLMResponse` -- no dependen de xlsx, Chroma ni
 `DEEPSEEK_API_KEY`, y no gastan tokens reales. Existen específicamente
 para codificar como test de regresión el bug de truncamiento silencioso
-encontrado con una respuesta real sobre Shellac (sesión 18-ago-2026,
-ver CLAUDE.md/PROGRESS.md): antes de ese fix, un `finish_reason ==
-'length'` se devolvía al usuario cortado a mitad de frase sin ningún
-aviso.
+encontrado con una respuesta real sobre Shellac: antes de ese fix, un
+`finish_reason == 'length'` se devolvía cortado a mitad de frase sin
+ningún aviso.
 """
 
 from pathlib import Path
@@ -166,21 +165,20 @@ def test_format_retrieved_chunks_flags_tier3_with_confidence_caveat():
 
 
 def test_format_retrieved_chunks_empty_and_no_structured_result_reports_no_opinion_found():
-    """CONTRATO ACTUAL (sesión 19-ago-2026, fix del caso real "Olive leaf
-    dry extract" -- ver test_openfoodtox_joins.py y CLAUDE.md): esta
-    función ya solo se llama desde `_build_user_prompt` en ramas donde
-    la sustancia YA se identificó (el caso de 0 candidatos usa
+    """Contrato actual (caso real "Olive leaf dry extract" -- ver
+    test_openfoodtox_joins.py y CLAUDE.md): esta función solo se llama
+    desde `_build_user_prompt` en ramas donde la sustancia YA se
+    identificó (el caso de 0 candidatos usa
     `_format_unresolved_substance_message` en su lugar, nunca esta). Por
-    eso, cuando `structured_result` es `None`, el mensaje NO debe volver
-    a culpar a la resolución de sustancia (bug corregido en esta sesión
-    -- antes decía "no se ha podido resolver de forma exacta la
-    sustancia", CONDICIONALMENTE falso: cierto solo para el caso de 0
-    candidatos, pero reutilizado también aquí sin distinguir el
-    contexto). Tampoco debe repetir el bug incondicionalmente falso ya
-    corregido antes ("el corpus no está indexado", nunca cierto).
+    eso, cuando `structured_result` es `None`, el mensaje no debe volver
+    a culpar a la resolución de sustancia: una versión anterior decía
+    "no se ha podido resolver de forma exacta la sustancia",
+    condicionalmente falso -- cierto solo para el caso de 0 candidatos,
+    pero reutilizado también aquí sin distinguir el contexto. Tampoco
+    debe repetir el mensaje incondicionalmente falso "el corpus no está
+    indexado" (nunca cierto).
 
-    Segundo ajuste (misma sesión, continuación posterior): el mensaje
-    tampoco debe contener NINGUNA frase que suene a "no se ha
+    El mensaje tampoco debe contener ninguna frase que suene a "no se ha
     identificado la sustancia" (ni siquiera "en el corpus indexado",
     léxicamente parecida a la del mensaje de 0 candidatos) -- esa
     afirmación es específicamente falsa aquí, la sustancia SÍ se
@@ -217,20 +215,20 @@ def test_format_retrieved_chunks_empty_but_structured_result_present_differs():
 def test_build_user_prompt_olive_leaf_extract_real_case_does_not_self_contradict(
     store: OpenFoodToxStore,
 ):
-    """Caso de regresión con datos REALES, no construido a mano -- "Olive
+    """Caso de regresión con datos reales, no construido a mano -- "Olive
     leaf dry extract from O. europaea L." (mismo caso ya probado en
     test_openfoodtox_joins.py::test_olive_leaf_extract_has_no_real_food_additive_opinion):
     resuelve por nombre EXACTO en SUB (1 candidato), pero su único
     dossier es de pienso animal -- current_reference_value_opinion da
     None, sin ningún dictamen alimentario real.
 
-    Antes del fix de esta sesión, el prompt resultante se contradecía a
-    sí mismo: "Sustancia identificada: Olive leaf dry extract..." seguido
-    de un mensaje que afirmaba "no se ha podido resolver de forma exacta
-    la sustancia mencionada en la pregunta" -- verificado con una llamada
+    Sin este fix, el prompt resultante se contradecía a sí mismo:
+    "Sustancia identificada: Olive leaf dry extract..." seguido de un
+    mensaje que afirmaba "no se ha podido resolver de forma exacta la
+    sustancia mencionada en la pregunta" -- confirmado con una llamada
     real al pipeline completo (hybrid_retrieval_node + verify_currency_node
-    + _build_user_prompt, sin mock) antes de escribir el fix. Este test
-    bloquea que la contradicción vuelva a aparecer."""
+    + _build_user_prompt, sin mock). Este test bloquea que la
+    contradicción vuelva a aparecer."""
     name = "Olive leaf dry extract from O. europaea L."
     candidates = store.resolve_substance_candidates(name)
     assert len(candidates) == 1, f"Se esperaba 1 candidato exacto, se obtuvo: {candidates!r}"
@@ -256,11 +254,10 @@ def test_build_user_prompt_olive_leaf_extract_real_case_does_not_self_contradict
     assert "no se ha podido resolver de forma exacta la sustancia" not in prompt
     assert "no se ha encontrado ningún dictamen" in prompt
     assert "sí se identificó" in prompt.lower()
-    # Segundo ajuste (misma sesión, continuación posterior): tampoco debe
-    # quedar ninguna frase residual que suene a "no identificada", ni la
-    # frase "corpus indexado" (léxicamente exclusiva del mensaje de 0
-    # candidatos) que podía inducir al LLM a mezclar los dos mensajes al
-    # parafrasear.
+    # Tampoco debe quedar ninguna frase residual que suene a "no
+    # identificada", ni la frase "corpus indexado" (léxicamente exclusiva
+    # del mensaje de 0 candidatos) que podía inducir al LLM a mezclar los
+    # dos mensajes al parafrasear.
     assert "no se ha identificado" not in prompt.lower()
     assert "no se ha podido identificar" not in prompt.lower()
     assert "corpus indexado" not in prompt
@@ -315,8 +312,7 @@ def test_hybrid_retrieval_node_aspartame_real_query(chroma_deps: NodeDependencie
     assert all(c.section_heading for c in chunks)  # no vacío ni None
     assert all(c.text.strip() for c in chunks)
     # substance_resolution_tier copiado tal cual del metadato indexado,
-    # no re-derivado -- aspartamo es tier 1 (ADI real), verificado en
-    # sesiones anteriores.
+    # no re-derivado -- aspartamo es tier 1 (ADI real).
     assert all(c.substance_resolution_tier == 1 for c in chunks)
 
 
@@ -399,12 +395,12 @@ def llm_client():
 def test_extract_entity_node_resolves_aspartame_from_real_english_query(
     store: OpenFoodToxStore, llm_client
 ):
-    """PRIMERA prueba real de este nodo -- llamada REAL a la API de
-    DeepSeek (no un mock), pregunta en inglés sobre aspartamo (el caso
-    de referencia ya usado en el resto del proyecto -- aspartamo E951,
-    test_openfoodtox_joins, Nodo 4). No se da por hecho que resuelva el
-    UUID correcto solo porque el prompt parece razonable -- se verifica
-    contra `store.substance_uuid_by_name("Aspartame")` directamente."""
+    """Llamada real a la API de DeepSeek (no un mock), pregunta en
+    inglés sobre aspartamo (el caso de referencia ya usado en el resto
+    del proyecto -- aspartamo E951, test_openfoodtox_joins, Nodo 4). No
+    se da por hecho que resuelva el UUID correcto solo porque el prompt
+    parece razonable -- se verifica contra
+    `store.substance_uuid_by_name("Aspartame")` directamente."""
     deps = NodeDependencies(store=store, llm_client=llm_client)
     state = {"user_query": "What is the ADI of aspartame and what study is it based on?"}
 
@@ -434,7 +430,7 @@ def test_extract_entity_node_unrelated_query_resolves_to_none(store: OpenFoodTox
 
 
 # --------------------------------------------------------------------- #
-# Nodo 4 -- generate_answer_node (truncamiento, sesión 18-ago-2026)
+# Nodo 4 -- generate_answer_node (truncamiento)
 # --------------------------------------------------------------------- #
 
 
@@ -578,7 +574,7 @@ def test_generate_answer_node_no_retry_when_first_response_is_not_truncated():
 
 
 # --------------------------------------------------------------------- #
-# Nodo 4 -- _build_user_prompt con candidatos múltiples (sesión 19-ago-2026)
+# Nodo 4 -- _build_user_prompt con candidatos múltiples
 # --------------------------------------------------------------------- #
 
 
@@ -595,7 +591,7 @@ def _fake_opinion(uuid: str, title: str) -> OpinionReference:
 def test_build_user_prompt_single_candidate_matches_legacy_format():
     """Con 0 o 1 candidato, el prompt debe seguir el mismo formato de
     siempre (sin envoltorio de "candidato 1 de N") -- regresión contra
-    el comportamiento ya probado en sesiones anteriores (aspartamo,
+    el comportamiento ya probado con datos reales (aspartamo,
     Shellac)."""
     candidate = _fake_candidate("Aspartame", 100.0, "uuid-aspartame")
     state = {
@@ -668,8 +664,8 @@ def test_build_user_prompt_truncated_candidates_announces_it_explicitly():
 
 
 # --------------------------------------------------------------------- #
-# Nodo 4 -- mensaje de sustancia no identificada (sesión 19-ago-2026,
-# caso real "plai caramel": la sustancia SÍ existe y SÍ tiene dictamen
+# Nodo 4 -- mensaje de sustancia no identificada (caso real "plai
+# caramel": la sustancia SÍ existe y SÍ tiene dictamen
 # vigente, el fallo fue de resolución de nombre, no de ausencia real --
 # el mensaje NO debe afirmar "esta sustancia no tiene reevaluaciones
 # recientes" (no verificable, potencialmente falso).
@@ -678,9 +674,9 @@ def test_build_user_prompt_truncated_candidates_announces_it_explicitly():
 
 def test_format_unresolved_substance_message_includes_fixed_efsa_link_and_verbatim_query():
     """El mensaje debe incluir el enlace FIJO a EFSA (no un buscador con
-    parámetro -- descartado en esta sesión tras verificarse en navegador
-    real que no filtra) y el texto de la pregunta del usuario TAL CUAL,
-    sin reformular."""
+    parámetro -- descartado tras verificarse en navegador real que no
+    filtra) y el texto de la pregunta del usuario TAL CUAL, sin
+    reformular."""
     raw_query = "¿Para qué se usa el plai caramel como aditivo??? typo aposta"
     message = _format_unresolved_substance_message(raw_query)
 
