@@ -61,8 +61,8 @@ una.
 
 Grafo completo implementado y ejecutado de extremo a extremo (Nodo 1 --
 extracción de entidad -> Nodo 2 -- retrieval híbrido -> Nodo 3 --
-verificación de vigencia -> Nodo 4 -- generación), probado con
-consultas reales, no solo con mocks:
+verificación de vigencia -> Nodo 4 -- generación):
+
 - `src/efsa_rag/ingestion/openfoodtox.py` -- cadena de joins
   determinista para ADI/TDI, vigencia y resolución de sustancias por
   dossier, verificada contra el xlsx real de OpenFoodTox 3.0.
