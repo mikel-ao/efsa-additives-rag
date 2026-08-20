@@ -25,15 +25,14 @@ MIN_INTERVAL = timedelta(hours=24)
 #
 # Dos capas con roles distintos, no intercambiables:
 #   - Límite GLOBAL diario: la protección real del gasto. Vive en el
-#     servidor, nadie lo puede saltar. Si esto falla, el presupuesto
-#     mensual (6-7 EUR) sigue acotado porque el límite es en EUR
-#     estimados, no solo en número de consultas.
+#     servidor, nadie lo puede saltar, y el límite es en EUR estimados,
+#     no solo en número de consultas -- el gasto mensual sigue acotado
+#     aunque el número de consultas varíe.
 #   - Límite por IP: mejora de UX (reparte el uso, evita que una sola
 #     persona agote el global sin querer). NO es una protección de
 #     seguridad real: usa una API interna no estable de Streamlit
 #     (get_script_run_ctx), y las IPs se comparten (redes corporativas)
-#     o se cambian (VPN) con facilidad. Trátalo como cortesía, no como
-#     candado.
+#     o se cambian (VPN) con facilidad. 
 # --------------------------------------------------------------------- #
 
 USAGE_LOG = Path(__file__).parent.parent.parent.parent / "data" / "usage_log.json"
@@ -44,7 +43,7 @@ DAILY_GLOBAL_QUERY_LIMIT = 200
 # o el precio -- ver CLAUDE.md, "Decisiones de arquitectura", "Precio
 # LLM de referencia".
 ESTIMATED_COST_PER_QUERY_USD = 0.002
-DAILY_HARD_COST_CEILING_USD = 0.35  # ~7 EUR/mes repartidos en ~30 dias, con margen
+DAILY_HARD_COST_CEILING_USD = 0.35  # techo diario con margen sobre el gasto mensual estimado
 
 
 def _load_usage() -> dict:
