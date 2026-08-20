@@ -8,8 +8,6 @@
 [![MCP](https://img.shields.io/badge/MCP-black?style=for-the-badge&logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io/)
 [![DeepSeek](https://img.shields.io/badge/DeepSeek-black?style=for-the-badge&logo=deepseek&logoColor=5786FE)](https://www.deepseek.com/)
 
-*(nombre técnico del repo: `efsa-additives-rag`)*
-
 **Índice**
 - [Alcance](#alcance)
 - [Estado actual](#estado-actual)
